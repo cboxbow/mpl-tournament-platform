@@ -60,7 +60,9 @@ async function runMigrationsHandler(c: import("hono").Context) {
 
   const tables = await executeSql("select name from sqlite_master where type='table' order by name");
   const matchCount = await executeSql("select count(*) as c from matches");
-  const tournaments = await executeSql("select id, slug, migrationStatus from tournaments");
+  const tournaments = await executeSql(
+    "select id, slug, json_extract(settings, '$.migrationStatus') as migrationStatus from tournaments"
+  );
 
   return c.json(
     apiSuccess({
