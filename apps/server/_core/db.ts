@@ -90,6 +90,20 @@ export async function executeSql(sql: string, args?: SqlArgs): Promise<QueryResu
   }
 }
 
+/**
+ * Runs a multi-statement SQL script (e.g. a migration file) against the
+ * configured database. Uses libsql'''s executeMultiple, which correctly
+ * splits statements on `;` without needing to parse string literals or
+ * trigger bodies ourselves.
+ */
+export async function executeMigrationScript(sql: string): Promise<void> {
+  try {
+    await getClient().executeMultiple(sql);
+  } catch (error) {
+    throw mapLibsqlError(error);
+  }
+}
+
 export type StorageFileRecord = StorageFile;
 export type NewStorageFileRecord = NewStorageFile;
 
