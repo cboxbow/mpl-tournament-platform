@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MPL Tournament Platform — Audit et Phase 1</title>
+  <style>
+    @page { size: A4; margin: 18mm 17mm 20mm; }
+    :root {
+      --navy: #081522;
+      --ink: #152434;
+      --muted: #5f7181;
+      --line: #d9e2e8;
+      --soft: #f2f7fa;
+      --cyan: #00b8d9;
+      --gold: #c59a45;
+      --green: #147d66;
+      --red: #b94747;
+    }
+    * { box-sizing: border-box; }
+    html { color: var(--ink); background: #e9eef2; }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      line-height: 1.55;
+      font-size: 10.5pt;
+      background: #fff;
+    }
+    article { max-width: 180mm; margin: 0 auto; padding: 0 0 22mm; }
+    .cover {
+      min-height: 245mm;
+      padding: 28mm 18mm 22mm;
+      color: #fff;
+      background:
+        radial-gradient(circle at 84% 18%, rgba(0,184,217,.28), transparent 27%),
+        linear-gradient(145deg, #06111c 0%, #0b2133 58%, #102d40 100%);
+      position: relative;
+      overflow: hidden;
+      break-after: page;
+    }
+    .cover:after {
+      content: "";
+      position: absolute;
+      width: 180mm; height: 180mm;
+      right: -84mm; bottom: -86mm;
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 50%;
+      box-shadow: 0 0 0 18mm rgba(255,255,255,.025), 0 0 0 36mm rgba(255,255,255,.018);
+    }
+    .eyebrow {
+      font-size: 8.5pt;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+      color: #83dbea;
+      font-weight: 700;
+    }
+    h1, h2, h3 { line-height: 1.15; margin: 0 0 10px; color: var(--navy); }
+    .cover h1 { color: #fff; font-size: 31pt; max-width: 125mm; letter-spacing: -.03em; margin-top: 18mm; }
+    .cover h1 span { color: #8de9f6; }
+    .cover .subtitle { max-width: 118mm; font-size: 14pt; color: #d8e8ef; margin: 14px 0 28mm; }
+    .cover-meta {
+      position: absolute; left: 18mm; right: 18mm; bottom: 20mm;
+      display: flex; justify-content: space-between; gap: 12mm;
+      border-top: 1px solid rgba(255,255,255,.22); padding-top: 8mm;
+      font-size: 9pt; color: #c0d1db;
+    }
+    .cover-meta strong { color: #fff; display: block; font-size: 10pt; }
+    .section { padding: 15mm 0 0; }
+    .section + .section { border-top: 1px solid var(--line); margin-top: 15mm; }
+    h2 { font-size: 19pt; letter-spacing: -.02em; }
+    h3 { font-size: 12.5pt; margin-top: 16px; }
+    p { margin: 7px 0 10px; }
+    .lead { font-size: 12pt; color: #304655; }
+    .callout {
+      border-left: 4px solid var(--cyan);
+      background: var(--soft);
+      padding: 10px 13px;
+      margin: 12px 0 16px;
+      break-inside: avoid;
+    }
+    .warning { border-left-color: var(--gold); }
+    .critical { border-left-color: var(--red); background: #fff5f4; }
+    ul, ol { margin: 6px 0 12px 21px; padding: 0; }
+    li { margin: 3px 0; }
+    .pill {
+      display: inline-block; padding: 3px 8px; border-radius: 999px;
+      font-size: 8pt; font-weight: 800; letter-spacing: .06em; text-transform: uppercase;
+      background: #e6f8fb; color: #007f95; vertical-align: 2px;
+    }
+    .pill.gold { background: #fbf3df; color: #86621f; }
+    .grid {
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 11px; margin: 10px 0 14px;
+    }
+    .panel {
+      border: 1px solid var(--line); padding: 11px 12px; background: #fff;
+      break-inside: avoid;
+    }
+    .panel strong { display: block; color: var(--navy); margin-bottom: 4px; }
+    table { width: 100%; border-collapse: collapse; margin: 10px 0 16px; font-size: 9.3pt; break-inside: avoid; }
+    th, td { border: 1px solid var(--line); padding: 7px 8px; text-align: left; vertical-align: top; }
+    th { background: var(--navy); color: #fff; font-size: 8.5pt; letter-spacing: .05em; text-transform: uppercase; }
+    tr:nth-child(even) td { background: #fafcfd; }
+    code, pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 8.5pt;
+    }
+    pre {
+      background: #0b1722; color: #d7eef3; padding: 13px 14px; overflow-wrap: anywhere;
+      white-space: pre-wrap; border-radius: 4px; margin: 10px 0 16px; break-inside: avoid;
+    }
+    .tree {
+      background: #f7fafb; border: 1px solid var(--line); padding: 12px 14px;
+      white-space: pre-wrap; font-family: "SFMono-Regular", Consolas, monospace; font-size: 9pt;
+      break-inside: avoid;
+    }
+    .step { display: grid; grid-template-columns: 31mm 1fr; gap: 10px; margin: 7px 0; }
+    .step-label { font-weight: 800; color: var(--cyan); text-transform: uppercase; font-size: 8.5pt; letter-spacing: .08em; }
+    .footer {
+      margin-top: 18mm; padding-top: 7mm; border-top: 1px solid var(--line);
+      color: var(--muted); font-size: 8.5pt;
+    }
+    .keep-together { break-inside: avoid; }
+    @media print {
+      html { background: #fff; }
+      body { font-size: 10pt; }
+      .cover { margin: -18mm -17mm -20mm; padding-left: 35mm; padding-right: 35mm; }
+      a { color: inherit; text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+  <article>
+    <header class="cover">
+      <div class="eyebrow">Mauritius Padel League · Architecture &amp; Product Evolution</div>
+      <h1>MPL <span>Tournament Platform</span></h1>
+      <p class="subtitle">Audit de l’application M1000 CANA 2026 et plan d’évolution vers un moteur officiel multi-tournois.</p>
+      <div class="callout" style="background:rgba(255,255,255,.09);border-left-color:#8de9f6;color:#e8f8fb;max-width:122mm;">
+        Le M1000 CANA 2026 devient le premier enregistrement réel d’une plateforme MPL capable d’organiser, exécuter, diffuser et archiver tous les tournois futurs.
+      </div>
+      <div class="cover-meta">
+        <div><strong>Document</strong>Audit &amp; Phase 1</div>
+        <div><strong>Tournoi de référence</strong>M1000 CANA 2026</div>
+        <div><strong>URL auditée</strong>mpl-m1000-cana-2026.vercel.app</div>
+      </div>
+    </header>
+
+    <section class="section">
+      <div class="eyebrow">Statut d’exécution</div>
+      <h2>Une base robuste, mais encore spécialisée</h2>
+      <p class="lead">L’application publique a été auditée. Elle présente déjà la majorité des briques sportives nécessaires à un moteur de tournoi premium.</p>
+      <div class="callout warning"><strong>Limite de cette session.</strong> Aucun code source n’est présent dans le workspace et aucun Website ID canonique n’est lié. La base Supabase, le dépôt et la production n’ont donc pas été modifiés. Cette approche protège le tournoi CANA de toute migration aveugle ou de la création d’une seconde application.</div>
+    </section>
+
+    <section class="section">
+      <div class="eyebrow">01 · Current architecture observable</div>
+      <h2>Ce qui existe déjà</h2>
+      <p>L’application est une application Next.js rendue comme un produit de tournoi complet, avec une identité visuelle et éditoriale fortement centrée sur CANA.</p>
+      <h3>Routes publiques observées</h3>
+      <div class="grid">
+        <div class="panel"><strong>Navigation tournoi</strong><code>/</code>, <code>/live</code>, <code>/schedule</code>, <code>/round-robin</code>, <code>/men</code>, <code>/women</code>, <code>/brackets</code>, <code>/ranking-brackets</code>, <code>/teams</code>, <code>/results</code>, <code>/info</code></div>
+        <div class="panel"><strong>Routes de détail</strong><code>/match/[matchId]</code>, <code>/teams/[teamId]</code>, <code>/posters/[asset]</code></div>
+      </div>
+      <h3>Administration observée</h3>
+      <p><code>/admin</code> propose un accès par PIN officiel. La surface actuelle est principalement orientée vers le scoring live.</p>
+      <h3>Capacités réutilisables</h3>
+      <ul>
+        <li>Match engine, score entry et affichage des scores.</li>
+        <li>Centre live multi-courts, statuts de match et prochain match.</li>
+        <li>Groupes / round robin, tableaux, tableaux de classement et dépendances.</li>
+        <li>Équipes, pages équipes, planning et order of play.</li>
+        <li>Pages de résultats, responsive mobile et bottom navigation.</li>
+        <li>Rafraîchissement automatique des scores et conventions d’URL partageables.</li>
+        <li>Design premium déjà cohérent : navy / near-black, blanc, cyan / bleu et accents gold.</li>
+      </ul>
+    </section>
+
+    <section class="section">
+      <div class="eyebrow">02 · Dépendances CANA</div>
+      <h2>Ce qui doit devenir dynamique</h2>
+      <table>
+        <thead><tr><th>Surface</th><th>Couplage actuel</th><th>Cible Phase 1</th></tr></thead>
+        <tbody>
+          <tr><td>Métadonnées</td><td>Titre, description et OG tags M1000 CANA 2026.</td><td>Injectés depuis <code>Tournament</code>.</td></tr>
+          <tr><td>Identité</td><td>Dates 13—15 août 2026, CANA Club, logos et images CANA.</td><td>Venue, branding et calendrier par tournoi.</td></tr>
+          <tr><td>KPIs</td><td>35 équipes hommes, 13 équipes femmes, 96 joueurs, 5 courts.</td><td>Agrégats filtrés par <code>tournament_id</code>.</td></tr>
+          <tr><td>Programme</td><td>Qualifying, main draw, classification et finales fixes.</td><td>Structure de tournoi et catégories configurables.</td></tr>
+          <tr><td>Routing</td><td>Routes globales supposant un seul tournoi.</td><td><code>/tournaments/[slug]</code> et sous-routes.</td></tr>
+          <tr><td>Admin</td><td>Scoring live sans sélection de tournoi.</td><td>Tournament Hub admin et création de tournoi.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="eyebrow">03 · Target architecture</div>
+      <h2>Une application unique, plusieurs compétitions</h2>
+      <div class="tree">MPL Platform
+├── Public
+│   ├── /tournaments
+│   ├── /tournaments/[slug]
+│   └── /tournaments/[slug]/
+│       ├── live
+│       ├── schedule
+│       ├── draws
+│       ├── groups
+│       ├── teams
+│       ├── players
+│       ├── results
+│       └── info
+├── Player ecosystem
+│   └── /players/[slug]
+├── Personal view
+│   └── /my-tournament
+└── Admin
+    ├── /admin/tournaments
+    ├── /admin/tournaments/new
+    └── /admin/tournaments/[id]</div>
+      <p>Le layout MPL reste partagé. Chaque tournoi injecte son identité, sa venue, ses dates, son statut, ses catégories, son branding et ses données sportives. Les moteurs existants restent au centre du produit.</p>
+    </section>
+
+    <section class="section">
+      <div class="eyebrow">04 · Modèle de données Phase 1</div>
+      <h2>Créer le contexte Tournament sans réécrire le sport</h2>
+      <h3><code>tournaments</code></h3>
+      <table>
+        <thead><tr><th>Groupe</th><th>Champs</th></tr></thead>
+        <tbody>
+          <tr><td>Identité</td><td><code>id</code>, <code>slug</code>, <code>name</code>, <code>short_name</code>, <code>season</code></td></tr>
+          <tr><td>Classification</td><td><code>level</code> : M25, M50, M100, M250, M500, M1000</td></tr>
+          <tr><td>Venue &amp; dates</td><td><code>venue_id</code>, <code>start_date</code>, <code>end_date</code>, dates d’ouverture / fermeture des inscriptions</td></tr>
+          <tr><td>Cycle de vie</td><td><code>status</code> : DRAFT, REGISTRATION, DRAW_PENDING, PUBLISHED, LIVE, COMPLETED, ARCHIVED</td></tr>
+          <tr><td>Présentation</td><td><code>logo</code>, <code>cover_image</code>, <code>description</code>, <code>public_url</code></td></tr>
+          <tr><td>Organisation</td><td><code>organiser</code>, <code>referee</code>, <code>settings jsonb</code>, timestamps</td></tr>
+        </tbody>
+      </table>
+      <h3><code>venues</code> et liaison legacy</h3>
+      <p>La table <code>venues</code> centralise clubs, adresses, cartes, logos, contacts et courts. Les tables sportives actuelles reçoivent une colonne nullable <code>tournament_id</code> référençant <code>tournaments(id)</code>. Cette colonne couvre les catégories, équipes, groupes, standings, matches, schedules, brackets, résultats et annonces.</p>
+    </section>
+
+    <section class="section">
+      <div class="eyebrow">05 · Database migration</div>
+      <h2>Migration CANA sûre et réversible</h2>
+      <p class="callout warning"><strong>Pré-requis :</strong> ajuster les noms de tables legacy au schéma Supabase réel avant exécution. Le script ci-dessous constitue un socle de migration, pas une autorisation d’exécuter en production sans sauvegarde.</p>
+      <pre><code>create extension if not exists pgcrypto;
+
+create table if not exists public.venues (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  slug text not null unique,
+  address text,
+  google_maps_url text,
+  logo text,
+  contact jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.tournaments (
+  id uuid primary key default gen_random_uuid(),
+  slug text not null unique,
+  name text not null,
+  short_name text,
+  season integer not null,
+  level text not null check (level in ('M25','M50','M100','M250','M500','M1000')),
+  venue_id uuid references public.venues(id) on delete set null,
+  start_date date,
+  end_date date,
+  registration_open_date date,
+  registration_close_date date,
+  status text not null default 'DRAFT'
+    check (status in (
+      'DRAFT','REGISTRATION','DRAW_PENDING','PUBLISHED',
+      'LIVE','COMPLETED','ARCHIVED'
+    )),
+  logo text,
+  cover_image text,
+  description text,
+  organiser text,
+  referee text,
+  public_url text,
+  settings jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists tournaments_status_dates_idx
+  on public.tournaments(status, start_date, end_date);
+
+insert into public.venues (name, slug)
+values ('CANA Club', 'cana-club')
+on conflict (slug) do nothing;
+
+insert into public.tournaments (
+  slug, name, short_name, season, level, venue_id,
+  start_date, end_date, status, organiser, referee, settings
+)
+select
+  'm1000-cana-2026',
+  'MPL M1000 CANA 2026',
+  'M1000 CANA',
+  2026,
+  'M1000',
+  v.id,
+  date '2026-08-13',
+  date '2026-08-15',
+  'PUBLISHED',
+  'Mauritius Padel League',
+  'Pascal Hoffmann',
+  jsonb_build_object(
+    'legacySource', 'm1000-cana-2026',
+    'migrationStatus', 'pending-legacy-table-link',
+    'branding', jsonb_build_object(
+      'accent', '#D6B46A',
+      'logo', '/brands/logo-cana.png',
+      'coverImage', '/og-cana-green.png'
+    )
+  )
+from public.venues v
+where v.slug = 'cana-club'
+on conflict (slug) do update set
+  name = excluded.name,
+  short_name = excluded.short_name,
+  season = excluded.season,
+  level = excluded.level,
+  venue_id = excluded.venue_id,
+  start_date = excluded.start_date,
+  end_date = excluded.end_date,
+  status = excluded.status,
+  organiser = excluded.organiser,
+  referee = excluded.referee,
+  settings = excluded.settings,
+  updated_at = now();</code></pre>
+      <h3>Règles de sécurité</h3>
+      <ol>
+        <li>Créer une sauvegarde des tables legacy.</li>
+        <li>Ajouter <code>tournament_id</code> nullable.</li>
+        <li>Backfiller toutes les lignes CANA vers <code>m1000-cana-2026</code>.</li>
+        <li>Comparer les comptes avant / après.</li>
+        <li>Ne supprimer aucune table ni colonne legacy en Phase 1.</li>
+        <li>Rendre les contraintes strictes après validation de production.</li>
+        <li>Afficher un avertissement critique avant toute correction impactant un match terminé.</li>
+      </ol>
+    </section>
+
+    <section class="section">
+      <div class="eyebrow">06 · Routing migration</div>
+      <h2>Conserver les anciennes URLs, introduire les nouvelles</h2>
+      <p>Les routes historiques restent fonctionnelles et résolvent temporairement le tournoi CANA par défaut :</p>
+      <p><code>/live</code> · <code>/schedule</code> · <code>/round-robin</code> · <code>/brackets</code> · <code>/ranking-brackets</code> · <code>/teams</code> · <code>/results</code> · <code>/info</code></p>
+      <p>Le nouveau routing public introduit :</p>
+      <ul>
+        <li><code>/tournaments</code> — Tournament Hub global.</li>
+        <li><code>/tournaments/m1000-cana-2026</code> — homepage CANA.</li>
+        <li><code>/tournaments/m1000-cana-2026/live</code></li>
+        <li><code>/tournaments/m1000-cana-2026/schedule</code></li>
+        <li><code>/tournaments/m1000-cana-2026/draws</code></li>
+        <li><code>/tournaments/m1000-cana-2026/groups</code></li>
+        <li><code>/tournaments/m1000-cana-2026/teams</code></li>
+        <li><code>/tournaments/m1000-cana-2026/players</code></li>
+        <li><code>/tournaments/m1000-cana-2026/results</code></li>
+        <li><code>/tournaments/m1000-cana-2026/info</code></li>
+      </ul>
+      <pre><code>const tournament = await getTournamentBySlug(params.slug);
+if (!tournament) notFound();</code></pre>
+      <p>Toutes les requêtes sportives des nouvelles routes doivent filtrer explicitement par <code>tournament.id</code> afin d’empêcher tout mélange entre compétitions.</p>
+    </section>
+
+    <section class="section">
+      <div class="eyebrow">07 · Phase 1 implementation</div>
+      <h2>Socle à livrer en premier</h2>
+      <h3>Services centraux</h3>
+      <pre><code>getTournamentBySlug(slug: string)
+listTournamentsByStatus(status?: TournamentStatus)
+getTournamentSummary(tournamentId: string)
+getTournamentNavigation(tournament: Tournament)</code></pre>
+      <h3>Types centraux</h3>
+      <pre><code>export type TournamentLevel = 'M25' | 'M50' | 'M100' | 'M250' | 'M500' | 'M1000';
+
+export type TournamentStatus =
+  | 'DRAFT'
+  | 'REGISTRATION'
+  | 'DRAW_PENDING'
+  | 'PUBLISHED'
+  | 'LIVE'
+  | 'COMPLETED'
+  | 'ARCHIVED';
+
+export interface Tournament {
+  id: string;
+  slug: string;
+  name: string;
+  shortName?: string | null;
+  season: number;
+  level: TournamentLevel;
+  venueId?: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
+  status: TournamentStatus;
+  logo?: string | null;
+  coverImage?: string | null;
+  description?: string | null;
+  organiser?: string | null;
+  referee?: string | null;
+  settings: Record&lt;string, unknown&gt;;
+}</code></pre>
+      <h3>Tournament Hub</h3>
+      <p><strong>LIVE NOW</strong> regroupe les tournois <code>LIVE</code>. <strong>UPCOMING</strong> regroupe <code>REGISTRATION</code>, <code>DRAW_PENDING</code> et <code>PUBLISHED</code>. <strong>RECENT RESULTS</strong> affiche les tournois <code>COMPLETED</code> triés par date. <strong>ARCHIVE</strong> conserve les tournois <code>ARCHIVED</code>.</p>
+      <h3>Homepage tournoi</h3>
+      <p>La page dynamique reprend la qualité visuelle actuelle et remplace le contenu statique par <code>tournament.name</code>, <code>venue.name</code>, les dates persistées, les agrégats filtrés et le statut du tournoi.</p>
+      <h3>Admin tournaments</h3>
+      <p>Créer <code>/admin/tournaments</code> avec filtres Draft / Upcoming / Live / Completed, CTA <code>CREATE TOURNAMENT</code>, action <code>DUPLICATE TOURNAMENT</code> et indicateurs équipes / joueurs / matchs / courts.</p>
+      <p>Le premier wizard couvre General, Categories, Courts, Branding, Review et Create. Les étapes Points, règles avancées, scheduling et draw sont affichées comme Phase 2.</p>
+    </section>
+
+    <section class="section">
+      <div class="eyebrow">08 · Non-régression</div>
+      <h2>Ce qui ne doit pas bouger en Phase 1</h2>
+      <ul>
+        <li>Match engine et score entry.</li>
+        <li>Standings, brackets, classification et dépendances.</li>
+        <li>Realtime Supabase.</li>
+        <li>UI mobile publique.</li>
+        <li>PIN/admin scoring actuel.</li>
+        <li>Teams, groups, matches, schedules et results du CANA.</li>
+      </ul>
+      <h3>Tests critiques</h3>
+      <table>
+        <thead><tr><th>Avant migration</th><th>Après migration</th></tr></thead>
+        <tbody>
+          <tr><td>Build actuel et lecture de la homepage</td><td>Les anciennes routes chargent toujours</td></tr>
+          <tr><td>Lecture <code>/live</code> et <code>/schedule</code></td><td><code>/tournaments</code> charge le hub</td></tr>
+          <tr><td>Ouverture d’un match</td><td>La homepage CANA restitue les mêmes données</td></tr>
+          <tr><td>Accès admin PIN</td><td>Un tournoi DRAFT vide ne montre aucun match CANA</td></tr>
+          <tr><td>—</td><td>Les filtres <code>tournament_id</code> ne mélangent jamais les équipes</td></tr>
+          <tr><td>—</td><td>Les résultats d’un tournoi ARCHIVED restent accessibles</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="eyebrow">09 · Prochaine étape</div>
+      <h2>Pré-requis pour l’implémentation réelle</h2>
+      <p>Fournir l’un des éléments suivants :</p>
+      <ol>
+        <li>Le dépôt Git / source checkout de l’application actuelle ;</li>
+        <li>une archive du code source avec les migrations Supabase ;</li>
+        <li>le Website ID canonique UUID7.</li>
+      </ol>
+      <p>Le séquencement prévu est alors : <code>website inspect</code>, <code>website status</code>, <code>website source checkout</code>, audit du schéma réel, migration SQL ajustée, routes dynamiques, hub et admin Phase 1, validation locale, puis déploiement.</p>
+      <div class="callout critical"><strong>Décision d’architecture :</strong> le tournoi M1000 CANA 2026 devient l’enregistrement permanent <code>m1000-cana-2026</code>. Aucune donnée sportive existante ne doit être supprimée ; elle doit être rattachée à ce contexte tournoi et rester archivée.</div>
+    </section>
+
+    <footer class="footer">
+      Document généré à partir du rapport « MPL Tournament Platform — Audit et Phase 1 ». Les éléments SQL sont des propositions à ajuster au schéma Supabase réel avant toute exécution.
+    </footer>
+  </article>
+</body>
+</html>
