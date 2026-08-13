@@ -12028,7 +12028,7 @@ var MIGRATIONS = [
 		sql: _007_cana_flow_default
 	}
 ];
-adminMigrateRouter.post("/", async (c) => {
+async function runMigrationsHandler(c) {
 	const secret = process.env.MIGRATE_ADMIN_SECRET;
 	if (!secret) return c.json({
 		ok: false,
@@ -12037,11 +12037,11 @@ adminMigrateRouter.post("/", async (c) => {
 			message: "MIGRATE_ADMIN_SECRET not set on server"
 		}
 	}, 503);
-	if (c.req.header("x-migrate-secret") !== secret) return c.json({
+	if ((c.req.header("x-migrate-secret") ?? c.req.query("secret")) !== secret) return c.json({
 		ok: false,
 		error: {
 			code: "UNAUTHORIZED",
-			message: "Invalid or missing x-migrate-secret header"
+			message: "Invalid or missing secret"
 		}
 	}, 401);
 	if (!isDatabaseConfigured()) return c.json({
@@ -12083,14 +12083,9 @@ adminMigrateRouter.post("/", async (c) => {
 		matchCount: matchCount.rows[0]?.c,
 		tournaments: tournaments$1.rows
 	}));
-});
-adminMigrateRouter.get("/", (c) => c.json({
-	ok: false,
-	error: {
-		code: "METHOD_NOT_ALLOWED",
-		message: "POST with x-migrate-secret header"
-	}
-}, 405));
+}
+adminMigrateRouter.post("/", runMigrationsHandler);
+adminMigrateRouter.get("/", runMigrationsHandler);
 var _a$1;
 const NEVER = /* @__PURE__ */ Object.freeze({ status: "aborted" });
 function $constructor(name, initializer$2, params) {

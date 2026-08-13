@@ -31,13 +31,16 @@ const MIGRATIONS: Array<{ name: string; sql: string }> = [
   { name: "007_cana_flow.sql", sql: m007 }
 ];
 
-adminMigrateRouter.post("/", async (c) => {
+async function runMigrationsHandler(c: import("hono").Context) {
   const secret = process.env.MIGRATE_ADMIN_SECRET;
   if (!secret) {
     return c.json({ ok: false, error: { code: "MIGRATE_NOT_CONFIGURED", message: "MIGRATE_ADMIN_SECRET not set on server" } }, 503);
   }
-  if (c.req.header("x-migrate-secret") !== secret) {
-    return c.json({ ok: false, error: { code: "UNAUTHORIZED", message: "Invalid or missing x-migrate-secret header" } }, 401);
+  // Accept the secret via header (preferred, POST) or query param (fallback
+  // for tooling that can only issue plain GET requests to this URL).
+  const provided = c.req.header("x-migrate-secret") ?? c.req.query("secret");
+  if (provided !== secret) {
+    return c.json({ ok: false, error: { code: "UNAUTHORIZED", message: "Invalid or missing secret" } }, 401);
   }
   if (!isDatabaseConfigured()) {
     return c.json({ ok: false, error: { code: "DATABASE_UNCONFIGURED", message: "Skybase database runtime env is not configured" } }, 503);
@@ -68,8 +71,7 @@ adminMigrateRouter.post("/", async (c) => {
       tournaments: tournaments.rows
     })
   );
-});
+}
 
-adminMigrateRouter.get("/", (c) =>
-  c.json({ ok: false, error: { code: "METHOD_NOT_ALLOWED", message: "POST with x-migrate-secret header" } }, 405)
-);
+adminMigrateRouter.post("/", runMigrationsHandler);
+adminMigrateRouter.get("/", runMigrationsHandler);
