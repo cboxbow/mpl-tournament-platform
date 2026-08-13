@@ -12052,7 +12052,7 @@ async function runMigrationsHandler(c) {
 		}
 	}, 503);
 	const results = [];
-	for (const migration of MIGRATIONS) try {
+	if (c.req.query("mode") !== "status") for (const migration of MIGRATIONS) try {
 		await executeMigrationScript(migration.sql);
 		results.push({
 			name: migration.name,
@@ -12075,12 +12075,21 @@ async function runMigrationsHandler(c) {
 	}
 	const tables = await executeSql("select name from sqlite_master where type='table' order by name");
 	const matchCount = await executeSql("select count(*) as c from matches");
+	const depCount = await executeSql("select count(*) as c from match_dependencies");
+	const bindingCount = await executeSql("select count(*) as c from match_result_bindings");
+	const teamCount = await executeSql("select count(*) as c from teams");
+	const auditCount = await executeSql("select count(*) as c from audit_logs");
 	const tournaments$1 = await executeSql("select id, slug, json_extract(settings, '$.migrationStatus') as migrationStatus from tournaments");
+	const one = (r) => r.rows[0]?.c;
 	return c.json(apiSuccess({
 		results,
 		tableCount: tables.rows.length,
 		tables: tables.rows.map((r) => r.name),
-		matchCount: matchCount.rows[0]?.c,
+		matchCount: one(matchCount),
+		matchDependencyCount: one(depCount),
+		matchResultBindingCount: one(bindingCount),
+		teamCount: one(teamCount),
+		auditLogCount: one(auditCount),
 		tournaments: tournaments$1.rows
 	}));
 }

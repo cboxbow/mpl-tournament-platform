@@ -48,28 +48,45 @@ async function runMigrationsHandler(c: import("hono").Context) {
 
   const results: Array<{ name: string; ok: boolean; error?: string }> = [];
 
-  for (const migration of MIGRATIONS) {
-    try {
-      await executeMigrationScript(migration.sql);
-      results.push({ name: migration.name, ok: true });
-    } catch (error) {
-      results.push({ name: migration.name, ok: false, error: error instanceof Error ? error.message : String(error) });
-      return c.json({ ok: false, error: { code: "MIGRATION_FAILED", message: `Failed at ${migration.name}` }, results }, 500);
+  // mode=status skips re-running migrations and just reports current DB
+  // state — migrations 000-006 are fully idempotent (CREATE TABLE IF NOT
+  // EXISTS + INSERT OR IGNORE/REPLACE throughout), but 007's audit_logs
+  // INSERTs are plain INSERT and will hit a UNIQUE constraint on a second run
+  // once they've already landed once.
+  if (c.req.query("mode") !== "status") {
+    for (const migration of MIGRATIONS) {
+      try {
+        await executeMigrationScript(migration.sql);
+        results.push({ name: migration.name, ok: true });
+      } catch (error) {
+        results.push({ name: migration.name, ok: false, error: error instanceof Error ? error.message : String(error) });
+        return c.json({ ok: false, error: { code: "MIGRATION_FAILED", message: `Failed at ${migration.name}` }, results }, 500);
+      }
     }
   }
 
   const tables = await executeSql("select name from sqlite_master where type='table' order by name");
   const matchCount = await executeSql("select count(*) as c from matches");
+  const depCount = await executeSql("select count(*) as c from match_dependencies");
+  const bindingCount = await executeSql("select count(*) as c from match_result_bindings");
+  const teamCount = await executeSql("select count(*) as c from teams");
+  const auditCount = await executeSql("select count(*) as c from audit_logs");
   const tournaments = await executeSql(
     "select id, slug, json_extract(settings, '$.migrationStatus') as migrationStatus from tournaments"
   );
+
+  const one = (r: { rows: unknown[] }) => (r.rows[0] as unknown as { c: number })?.c;
 
   return c.json(
     apiSuccess({
       results,
       tableCount: tables.rows.length,
       tables: tables.rows.map((r) => (r as unknown as { name: string }).name),
-      matchCount: (matchCount.rows[0] as unknown as { c: number })?.c,
+      matchCount: one(matchCount),
+      matchDependencyCount: one(depCount),
+      matchResultBindingCount: one(bindingCount),
+      teamCount: one(teamCount),
+      auditLogCount: one(auditCount),
       tournaments: tournaments.rows
     })
   );
