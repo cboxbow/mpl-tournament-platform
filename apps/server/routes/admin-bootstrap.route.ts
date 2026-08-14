@@ -16,9 +16,13 @@ export const isPublic = true;
 export const adminBootstrapRouter = new Hono();
 
 adminBootstrapRouter.get("/", async (c) => {
-  const secret = process.env.MIGRATE_ADMIN_SECRET;
+  // Accept either the pre-existing MIGRATE_ADMIN_SECRET (value unknown to us —
+  // set directly in the Vercel dashboard during an earlier session) or a
+  // fresh ADMIN_BOOTSTRAP_SECRET, whichever is configured. Adding a brand new
+  // env var is simpler for the operator than hunting down an old one.
+  const secret = process.env.ADMIN_BOOTSTRAP_SECRET ?? process.env.MIGRATE_ADMIN_SECRET;
   if (!secret) {
-    return c.json({ ok: false, error: { code: "NOT_CONFIGURED", message: "MIGRATE_ADMIN_SECRET not set on server" } }, 503);
+    return c.json({ ok: false, error: { code: "NOT_CONFIGURED", message: "ADMIN_BOOTSTRAP_SECRET not set on server" } }, 503);
   }
   const provided = c.req.header("x-migrate-secret") ?? c.req.query("secret");
   if (provided !== secret) {

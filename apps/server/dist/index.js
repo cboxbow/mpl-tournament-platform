@@ -44428,12 +44428,12 @@ var admin_bootstrap_route_exports = /* @__PURE__ */ __export({
 }, 1);
 const adminBootstrapRouter = new Hono();
 adminBootstrapRouter.get("/", async (c) => {
-	const secret = process.env.MIGRATE_ADMIN_SECRET;
+	const secret = process.env.ADMIN_BOOTSTRAP_SECRET ?? process.env.MIGRATE_ADMIN_SECRET;
 	if (!secret) return c.json({
 		ok: false,
 		error: {
 			code: "NOT_CONFIGURED",
-			message: "MIGRATE_ADMIN_SECRET not set on server"
+			message: "ADMIN_BOOTSTRAP_SECRET not set on server"
 		}
 	}, 503);
 	if ((c.req.header("x-migrate-secret") ?? c.req.query("secret")) !== secret) return c.json({
