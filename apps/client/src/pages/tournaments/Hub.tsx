@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiFetch } from "@/lib/api";
+import { AuthNavLink } from "@/components/auth/AuthNavLink";
 
 type Tournament = { id: string; slug: string; name: string; shortName?: string | null; level: string; status: string; startDate?: string | null; endDate?: string | null; venue?: { name: string } | null };
 
@@ -46,7 +47,7 @@ export default function TournamentHub() {
     : items.filter((item) => effectiveStatus(item) === group);
 
   return <div className="mpl-page">
-    <header className="mpl-topbar"><Link className="mpl-brand" to="/"><span className="mpl-mark">MPL</span><span>TOURNAMENT HUB</span></Link><span className="mpl-muted">2026 SEASON</span></header>
+    <header className="mpl-topbar"><Link className="mpl-brand" to="/"><span className="mpl-mark">MPL</span><span>TOURNAMENT HUB</span></Link><div style={{ display: "flex", gap: "1rem", alignItems: "center" }}><span className="mpl-muted">2026 SEASON</span><AuthNavLink /></div></header>
     <main className="mpl-content">
       <div className="mpl-kicker">THE OFFICIAL MPL CALENDAR</div><h1 className="mpl-title">Tournament Hub</h1>
       {error && <div className="mpl-alert">{error}</div>}

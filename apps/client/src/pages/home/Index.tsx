@@ -1,9 +1,14 @@
+import { AuthNavLink } from "@/components/auth/AuthNavLink";
+
 const Index = () => {
   return (
     <div className="mpl-page">
       <header className="mpl-topbar">
         <div className="mpl-brand"><span className="mpl-mark">MPL</span><span>TOURNAMENT PLATFORM</span></div>
-        <a className="mpl-link" href="/tournaments">Tournament Hub →</a>
+        <div className="mpl-actions" style={{ gap: "1rem", alignItems: "center" }}>
+          <a className="mpl-link" href="/tournaments">Tournament Hub →</a>
+          <AuthNavLink />
+        </div>
       </header>
       <main className="mpl-hero">
         <div className="mpl-kicker">MAURITIUS PADEL LEAGUE · OFFICIAL ENGINE</div>
