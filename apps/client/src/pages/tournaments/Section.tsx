@@ -21,6 +21,49 @@ function text(row: Row, key: string) {
   return value == null || value === "" ? "—" : String(value);
 }
 
+// Match-shaped sections (live, schedule, draws, classification, results) all
+// return rows with teamAName/teamBName/status/courtName. groups, teams and
+// players return differently-shaped, section-appropriate rows — see
+// apps/server/routes/tournament-data.route.ts for the exact row shapes.
+function renderCard(section: string, row: Row) {
+  if (section === "groups") {
+    return (
+      <>
+        <div className="mpl-card-top"><span className="mpl-status live">{text(row, "categoryName")}</span><span>Group {text(row, "name")}</span></div>
+        <h3>{text(row, "teamName")}</h3>
+        <p>Seed {text(row, "seedPosition")} · {text(row, "matchCount")} matches</p>
+      </>
+    );
+  }
+  if (section === "teams") {
+    return (
+      <>
+        <div className="mpl-card-top"><span className="mpl-status live">{text(row, "categoryName")}</span><span>{text(row, "entryType")}</span></div>
+        <h3>{text(row, "name")}</h3>
+        <p>{text(row, "status")} · Weight {text(row, "teamWeight")}{row.seed != null ? ` · Seed ${text(row, "seed")}` : ""}</p>
+      </>
+    );
+  }
+  if (section === "players") {
+    return (
+      <>
+        <div className="mpl-card-top"><span className="mpl-status live">{text(row, "gender")}</span><span>Rank #{text(row, "tournamentRanking")}</span></div>
+        <h3>{text(row, "displayName")}</h3>
+        <p>{text(row, "eligibilityStatus")}{row.currentRanking != null ? ` · MPL #${text(row, "currentRanking")}` : ""}</p>
+      </>
+    );
+  }
+  return (
+    <>
+      <div className="mpl-card-top"><span className="mpl-status live">{text(row, "status")}</span><span>{text(row, "courtName")}</span></div>
+      <h3>{text(row, "teamAName")} <span className="mpl-vs">vs</span> {text(row, "teamBName")}</h3>
+      <p>{text(row, "categoryName")} · {text(row, "stage")} · {text(row, "round")}</p>
+      {section === "results" && <p>Position {text(row, "position") || text(row, "positionMin")} · {text(row, "points")} MPL points</p>}
+      {section === "schedule" && <p>{text(row, "scheduledAt")} · {text(row, "scheduleType")}</p>}
+    </>
+  );
+}
+
 export default function TournamentSection() {
   const { slug = "m1000-cana-2026", section = "live" } = useParams();
   const [rows, setRows] = useState<Row[]>([]);
@@ -77,12 +120,7 @@ export default function TournamentSection() {
               <div className="mpl-data-grid">
                 {visibleRows.map((row, index) => (
                   <article className={`mpl-data-card ${section === "live" ? "is-live" : ""}`} key={String(row.id ?? row.code ?? index)}>
-                    <div className="mpl-card-top"><span className="mpl-status live">{text(row, "status")}</span><span>{text(row, "courtName")}</span></div>
-                    <h3>{text(row, "teamAName")} <span className="mpl-vs">vs</span> {text(row, "teamBName")}</h3>
-                    <p>{text(row, "categoryName")} · {text(row, "stage")} · {text(row, "round")}</p>
-                    {section === "groups" && <p>Group {text(row, "groupName")} · {text(row, "matchCount")} matches</p>}
-                    {section === "results" && <p>Position {text(row, "position") || text(row, "positionMin")} · {text(row, "points")} MPL points</p>}
-                    {section === "schedule" && <p>{text(row, "scheduledAt")} · {text(row, "scheduleType")}</p>}
+                    {renderCard(section, row)}
                   </article>
                 ))}
               </div>

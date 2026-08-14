@@ -1369,6 +1369,5186 @@ var cors = (options) => {
 		if (opts.origin !== "*" || opts.credentials) c.header("Vary", "Origin", { append: true });
 	};
 };
+var entityKind = Symbol.for("drizzle:entityKind");
+function is(value, type) {
+	if (!value || typeof value !== "object") return false;
+	if (value instanceof type) return true;
+	if (!Object.prototype.hasOwnProperty.call(type, entityKind)) throw new Error(`Class "${type.name ?? "<unknown>"}" doesn't look like a Drizzle entity. If this is incorrect and the class is provided by Drizzle, please report this as a bug.`);
+	let cls = Object.getPrototypeOf(value).constructor;
+	if (cls) while (cls) {
+		if (entityKind in cls && cls[entityKind] === type[entityKind]) return true;
+		cls = Object.getPrototypeOf(cls);
+	}
+	return false;
+}
+var Column = class {
+	constructor(table, config$2) {
+		this.table = table;
+		this.config = config$2;
+		this.name = config$2.name;
+		this.keyAsName = config$2.keyAsName;
+		this.notNull = config$2.notNull;
+		this.default = config$2.default;
+		this.defaultFn = config$2.defaultFn;
+		this.onUpdateFn = config$2.onUpdateFn;
+		this.hasDefault = config$2.hasDefault;
+		this.primary = config$2.primaryKey;
+		this.isUnique = config$2.isUnique;
+		this.uniqueName = config$2.uniqueName;
+		this.uniqueType = config$2.uniqueType;
+		this.dataType = config$2.dataType;
+		this.columnType = config$2.columnType;
+		this.generated = config$2.generated;
+		this.generatedIdentity = config$2.generatedIdentity;
+	}
+	static [entityKind] = "Column";
+	name;
+	keyAsName;
+	primary;
+	notNull;
+	default;
+	defaultFn;
+	onUpdateFn;
+	hasDefault;
+	isUnique;
+	uniqueName;
+	uniqueType;
+	dataType;
+	columnType;
+	enumValues = void 0;
+	generated = void 0;
+	generatedIdentity = void 0;
+	config;
+	mapFromDriverValue(value) {
+		return value;
+	}
+	mapToDriverValue(value) {
+		return value;
+	}
+	shouldDisableInsert() {
+		return this.config.generated !== void 0 && this.config.generated.type !== "byDefault";
+	}
+};
+var ColumnBuilder = class {
+	static [entityKind] = "ColumnBuilder";
+	config;
+	constructor(name, dataType, columnType) {
+		this.config = {
+			name,
+			keyAsName: name === "",
+			notNull: false,
+			default: void 0,
+			hasDefault: false,
+			primaryKey: false,
+			isUnique: false,
+			uniqueName: void 0,
+			uniqueType: void 0,
+			dataType,
+			columnType,
+			generated: void 0
+		};
+	}
+	$type() {
+		return this;
+	}
+	notNull() {
+		this.config.notNull = true;
+		return this;
+	}
+	default(value) {
+		this.config.default = value;
+		this.config.hasDefault = true;
+		return this;
+	}
+	$defaultFn(fn) {
+		this.config.defaultFn = fn;
+		this.config.hasDefault = true;
+		return this;
+	}
+	$default = this.$defaultFn;
+	$onUpdateFn(fn) {
+		this.config.onUpdateFn = fn;
+		this.config.hasDefault = true;
+		return this;
+	}
+	$onUpdate = this.$onUpdateFn;
+	primaryKey() {
+		this.config.primaryKey = true;
+		this.config.notNull = true;
+		return this;
+	}
+	setName(name) {
+		if (this.config.name !== "") return;
+		this.config.name = name;
+	}
+};
+var TableName = Symbol.for("drizzle:Name");
+var ForeignKeyBuilder$1 = class {
+	static [entityKind] = "PgForeignKeyBuilder";
+	reference;
+	_onUpdate = "no action";
+	_onDelete = "no action";
+	constructor(config$2, actions) {
+		this.reference = () => {
+			const { name, columns, foreignColumns } = config$2();
+			return {
+				name,
+				columns,
+				foreignTable: foreignColumns[0].table,
+				foreignColumns
+			};
+		};
+		if (actions) {
+			this._onUpdate = actions.onUpdate;
+			this._onDelete = actions.onDelete;
+		}
+	}
+	onUpdate(action) {
+		this._onUpdate = action === void 0 ? "no action" : action;
+		return this;
+	}
+	onDelete(action) {
+		this._onDelete = action === void 0 ? "no action" : action;
+		return this;
+	}
+	build(table) {
+		return new ForeignKey$1(table, this);
+	}
+};
+var ForeignKey$1 = class {
+	constructor(table, builder) {
+		this.table = table;
+		this.reference = builder.reference;
+		this.onUpdate = builder._onUpdate;
+		this.onDelete = builder._onDelete;
+	}
+	static [entityKind] = "PgForeignKey";
+	reference;
+	onUpdate;
+	onDelete;
+	getName() {
+		const { name, columns, foreignColumns } = this.reference();
+		const columnNames = columns.map((column) => column.name);
+		const foreignColumnNames = foreignColumns.map((column) => column.name);
+		const chunks = [
+			this.table[TableName],
+			...columnNames,
+			foreignColumns[0].table[TableName],
+			...foreignColumnNames
+		];
+		return name ?? `${chunks.join("_")}_fk`;
+	}
+};
+function iife(fn, ...args) {
+	return fn(...args);
+}
+function uniqueKeyName$1(table, columns) {
+	return `${table[TableName]}_${columns.join("_")}_unique`;
+}
+function parsePgArrayValue(arrayString, startFrom, inQuotes) {
+	for (let i = startFrom; i < arrayString.length; i++) {
+		const char = arrayString[i];
+		if (char === "\\") {
+			i++;
+			continue;
+		}
+		if (char === "\"") return [arrayString.slice(startFrom, i).replace(/\\/g, ""), i + 1];
+		if (inQuotes) continue;
+		if (char === "," || char === "}") return [arrayString.slice(startFrom, i).replace(/\\/g, ""), i];
+	}
+	return [arrayString.slice(startFrom).replace(/\\/g, ""), arrayString.length];
+}
+function parsePgNestedArray(arrayString, startFrom = 0) {
+	const result = [];
+	let i = startFrom;
+	let lastCharIsComma = false;
+	while (i < arrayString.length) {
+		const char = arrayString[i];
+		if (char === ",") {
+			if (lastCharIsComma || i === startFrom) result.push("");
+			lastCharIsComma = true;
+			i++;
+			continue;
+		}
+		lastCharIsComma = false;
+		if (char === "\\") {
+			i += 2;
+			continue;
+		}
+		if (char === "\"") {
+			const [value2, startFrom2] = parsePgArrayValue(arrayString, i + 1, true);
+			result.push(value2);
+			i = startFrom2;
+			continue;
+		}
+		if (char === "}") return [result, i + 1];
+		if (char === "{") {
+			const [value2, startFrom2] = parsePgNestedArray(arrayString, i + 1);
+			result.push(value2);
+			i = startFrom2;
+			continue;
+		}
+		const [value, newStartFrom] = parsePgArrayValue(arrayString, i, false);
+		result.push(value);
+		i = newStartFrom;
+	}
+	return [result, i];
+}
+function parsePgArray(arrayString) {
+	const [result] = parsePgNestedArray(arrayString, 1);
+	return result;
+}
+function makePgArray(array$2) {
+	return `{${array$2.map((item) => {
+		if (Array.isArray(item)) return makePgArray(item);
+		if (typeof item === "string") return `"${item.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
+		return `${item}`;
+	}).join(",")}}`;
+}
+var PgColumnBuilder = class extends ColumnBuilder {
+	foreignKeyConfigs = [];
+	static [entityKind] = "PgColumnBuilder";
+	array(size) {
+		return new PgArrayBuilder(this.config.name, this, size);
+	}
+	references(ref, actions = {}) {
+		this.foreignKeyConfigs.push({
+			ref,
+			actions
+		});
+		return this;
+	}
+	unique(name, config$2) {
+		this.config.isUnique = true;
+		this.config.uniqueName = name;
+		this.config.uniqueType = config$2?.nulls;
+		return this;
+	}
+	generatedAlwaysAs(as) {
+		this.config.generated = {
+			as,
+			type: "always",
+			mode: "stored"
+		};
+		return this;
+	}
+	buildForeignKeys(column, table) {
+		return this.foreignKeyConfigs.map(({ ref, actions }) => {
+			return iife((ref2, actions2) => {
+				const builder = new ForeignKeyBuilder$1(() => {
+					const foreignColumn = ref2();
+					return {
+						columns: [column],
+						foreignColumns: [foreignColumn]
+					};
+				});
+				if (actions2.onUpdate) builder.onUpdate(actions2.onUpdate);
+				if (actions2.onDelete) builder.onDelete(actions2.onDelete);
+				return builder.build(table);
+			}, ref, actions);
+		});
+	}
+	buildExtraConfigColumn(table) {
+		return new ExtraConfigColumn(table, this.config);
+	}
+};
+var PgColumn = class extends Column {
+	constructor(table, config$2) {
+		if (!config$2.uniqueName) config$2.uniqueName = uniqueKeyName$1(table, [config$2.name]);
+		super(table, config$2);
+		this.table = table;
+	}
+	static [entityKind] = "PgColumn";
+};
+var ExtraConfigColumn = class extends PgColumn {
+	static [entityKind] = "ExtraConfigColumn";
+	getSQLType() {
+		return this.getSQLType();
+	}
+	indexConfig = {
+		order: this.config.order ?? "asc",
+		nulls: this.config.nulls ?? "last",
+		opClass: this.config.opClass
+	};
+	defaultConfig = {
+		order: "asc",
+		nulls: "last",
+		opClass: void 0
+	};
+	asc() {
+		this.indexConfig.order = "asc";
+		return this;
+	}
+	desc() {
+		this.indexConfig.order = "desc";
+		return this;
+	}
+	nullsFirst() {
+		this.indexConfig.nulls = "first";
+		return this;
+	}
+	nullsLast() {
+		this.indexConfig.nulls = "last";
+		return this;
+	}
+	op(opClass) {
+		this.indexConfig.opClass = opClass;
+		return this;
+	}
+};
+var PgArrayBuilder = class extends PgColumnBuilder {
+	static [entityKind] = "PgArrayBuilder";
+	constructor(name, baseBuilder, size) {
+		super(name, "array", "PgArray");
+		this.config.baseBuilder = baseBuilder;
+		this.config.size = size;
+	}
+	build(table) {
+		const baseColumn = this.config.baseBuilder.build(table);
+		return new PgArray(table, this.config, baseColumn);
+	}
+};
+var PgArray = class PgArray extends PgColumn {
+	constructor(table, config$2, baseColumn, range) {
+		super(table, config$2);
+		this.baseColumn = baseColumn;
+		this.range = range;
+		this.size = config$2.size;
+	}
+	size;
+	static [entityKind] = "PgArray";
+	getSQLType() {
+		return `${this.baseColumn.getSQLType()}[${typeof this.size === "number" ? this.size : ""}]`;
+	}
+	mapFromDriverValue(value) {
+		if (typeof value === "string") value = parsePgArray(value);
+		return value.map((v) => this.baseColumn.mapFromDriverValue(v));
+	}
+	mapToDriverValue(value, isNestedArray = false) {
+		const a = value.map((v) => v === null ? null : is(this.baseColumn, PgArray) ? this.baseColumn.mapToDriverValue(v, true) : this.baseColumn.mapToDriverValue(v));
+		if (isNestedArray) return a;
+		return makePgArray(a);
+	}
+};
+var isPgEnumSym = Symbol.for("drizzle:isPgEnum");
+function isPgEnum(obj) {
+	return !!obj && typeof obj === "function" && isPgEnumSym in obj && obj[isPgEnumSym] === true;
+}
+var Subquery = class {
+	static [entityKind] = "Subquery";
+	constructor(sql$1, fields, alias, isWith = false, usedTables = []) {
+		this._ = {
+			brand: "Subquery",
+			sql: sql$1,
+			selectedFields: fields,
+			alias,
+			isWith,
+			usedTables
+		};
+	}
+};
+var WithSubquery = class extends Subquery {
+	static [entityKind] = "WithSubquery";
+};
+var tracer = { startActiveSpan(name, fn) {
+	return fn();
+} };
+var ViewBaseConfig = Symbol.for("drizzle:ViewBaseConfig");
+var Schema = Symbol.for("drizzle:Schema");
+var Columns = Symbol.for("drizzle:Columns");
+var ExtraConfigColumns = Symbol.for("drizzle:ExtraConfigColumns");
+var OriginalName = Symbol.for("drizzle:OriginalName");
+var BaseName = Symbol.for("drizzle:BaseName");
+var IsAlias = Symbol.for("drizzle:IsAlias");
+var ExtraConfigBuilder = Symbol.for("drizzle:ExtraConfigBuilder");
+var IsDrizzleTable = Symbol.for("drizzle:IsDrizzleTable");
+var Table = class {
+	static [entityKind] = "Table";
+	static Symbol = {
+		Name: TableName,
+		Schema,
+		OriginalName,
+		Columns,
+		ExtraConfigColumns,
+		BaseName,
+		IsAlias,
+		ExtraConfigBuilder
+	};
+	[TableName];
+	[OriginalName];
+	[Schema];
+	[Columns];
+	[ExtraConfigColumns];
+	[BaseName];
+	[IsAlias] = false;
+	[IsDrizzleTable] = true;
+	[ExtraConfigBuilder] = void 0;
+	constructor(name, schema$1, baseName) {
+		this[TableName] = this[OriginalName] = name;
+		this[Schema] = schema$1;
+		this[BaseName] = baseName;
+	}
+};
+function getTableName(table) {
+	return table[TableName];
+}
+function getTableUniqueName(table) {
+	return `${table[Schema] ?? "public"}.${table[TableName]}`;
+}
+function isSQLWrapper(value) {
+	return value !== null && value !== void 0 && typeof value.getSQL === "function";
+}
+function mergeQueries(queries) {
+	const result = {
+		sql: "",
+		params: []
+	};
+	for (const query of queries) {
+		result.sql += query.sql;
+		result.params.push(...query.params);
+		if (query.typings?.length) {
+			if (!result.typings) result.typings = [];
+			result.typings.push(...query.typings);
+		}
+	}
+	return result;
+}
+var StringChunk = class {
+	static [entityKind] = "StringChunk";
+	value;
+	constructor(value) {
+		this.value = Array.isArray(value) ? value : [value];
+	}
+	getSQL() {
+		return new SQL([this]);
+	}
+};
+var SQL = class SQL {
+	constructor(queryChunks) {
+		this.queryChunks = queryChunks;
+		for (const chunk of queryChunks) if (is(chunk, Table)) {
+			const schemaName = chunk[Table.Symbol.Schema];
+			this.usedTables.push(schemaName === void 0 ? chunk[Table.Symbol.Name] : schemaName + "." + chunk[Table.Symbol.Name]);
+		}
+	}
+	static [entityKind] = "SQL";
+	decoder = noopDecoder;
+	shouldInlineParams = false;
+	usedTables = [];
+	append(query) {
+		this.queryChunks.push(...query.queryChunks);
+		return this;
+	}
+	toQuery(config$2) {
+		return tracer.startActiveSpan("drizzle.buildSQL", (span) => {
+			const query = this.buildQueryFromSourceParams(this.queryChunks, config$2);
+			span?.setAttributes({
+				"drizzle.query.text": query.sql,
+				"drizzle.query.params": JSON.stringify(query.params)
+			});
+			return query;
+		});
+	}
+	buildQueryFromSourceParams(chunks, _config) {
+		const config$2 = Object.assign({}, _config, {
+			inlineParams: _config.inlineParams || this.shouldInlineParams,
+			paramStartIndex: _config.paramStartIndex || { value: 0 }
+		});
+		const { casing, escapeName, escapeParam, prepareTyping, inlineParams, paramStartIndex } = config$2;
+		return mergeQueries(chunks.map((chunk) => {
+			if (is(chunk, StringChunk)) return {
+				sql: chunk.value.join(""),
+				params: []
+			};
+			if (is(chunk, Name)) return {
+				sql: escapeName(chunk.value),
+				params: []
+			};
+			if (chunk === void 0) return {
+				sql: "",
+				params: []
+			};
+			if (Array.isArray(chunk)) {
+				const result = [new StringChunk("(")];
+				for (const [i, p] of chunk.entries()) {
+					result.push(p);
+					if (i < chunk.length - 1) result.push(new StringChunk(", "));
+				}
+				result.push(new StringChunk(")"));
+				return this.buildQueryFromSourceParams(result, config$2);
+			}
+			if (is(chunk, SQL)) return this.buildQueryFromSourceParams(chunk.queryChunks, {
+				...config$2,
+				inlineParams: inlineParams || chunk.shouldInlineParams
+			});
+			if (is(chunk, Table)) {
+				const schemaName = chunk[Table.Symbol.Schema];
+				const tableName = chunk[Table.Symbol.Name];
+				return {
+					sql: schemaName === void 0 || chunk[IsAlias] ? escapeName(tableName) : escapeName(schemaName) + "." + escapeName(tableName),
+					params: []
+				};
+			}
+			if (is(chunk, Column)) {
+				const columnName = casing.getColumnCasing(chunk);
+				if (_config.invokeSource === "indexes") return {
+					sql: escapeName(columnName),
+					params: []
+				};
+				const schemaName = chunk.table[Table.Symbol.Schema];
+				return {
+					sql: chunk.table[IsAlias] || schemaName === void 0 ? escapeName(chunk.table[Table.Symbol.Name]) + "." + escapeName(columnName) : escapeName(schemaName) + "." + escapeName(chunk.table[Table.Symbol.Name]) + "." + escapeName(columnName),
+					params: []
+				};
+			}
+			if (is(chunk, View)) {
+				const schemaName = chunk[ViewBaseConfig].schema;
+				const viewName = chunk[ViewBaseConfig].name;
+				return {
+					sql: schemaName === void 0 || chunk[ViewBaseConfig].isAlias ? escapeName(viewName) : escapeName(schemaName) + "." + escapeName(viewName),
+					params: []
+				};
+			}
+			if (is(chunk, Param)) {
+				if (is(chunk.value, Placeholder)) return {
+					sql: escapeParam(paramStartIndex.value++, chunk),
+					params: [chunk],
+					typings: ["none"]
+				};
+				const mappedValue = chunk.value === null ? null : chunk.encoder.mapToDriverValue(chunk.value);
+				if (is(mappedValue, SQL)) return this.buildQueryFromSourceParams([mappedValue], config$2);
+				if (inlineParams) return {
+					sql: this.mapInlineParam(mappedValue, config$2),
+					params: []
+				};
+				let typings = ["none"];
+				if (prepareTyping) typings = [prepareTyping(chunk.encoder)];
+				return {
+					sql: escapeParam(paramStartIndex.value++, mappedValue),
+					params: [mappedValue],
+					typings
+				};
+			}
+			if (is(chunk, Placeholder)) return {
+				sql: escapeParam(paramStartIndex.value++, chunk),
+				params: [chunk],
+				typings: ["none"]
+			};
+			if (is(chunk, SQL.Aliased) && chunk.fieldAlias !== void 0) return {
+				sql: escapeName(chunk.fieldAlias),
+				params: []
+			};
+			if (is(chunk, Subquery)) {
+				if (chunk._.isWith) return {
+					sql: escapeName(chunk._.alias),
+					params: []
+				};
+				return this.buildQueryFromSourceParams([
+					new StringChunk("("),
+					chunk._.sql,
+					new StringChunk(") "),
+					new Name(chunk._.alias)
+				], config$2);
+			}
+			if (isPgEnum(chunk)) {
+				if (chunk.schema) return {
+					sql: escapeName(chunk.schema) + "." + escapeName(chunk.enumName),
+					params: []
+				};
+				return {
+					sql: escapeName(chunk.enumName),
+					params: []
+				};
+			}
+			if (isSQLWrapper(chunk)) {
+				if (chunk.shouldOmitSQLParens?.()) return this.buildQueryFromSourceParams([chunk.getSQL()], config$2);
+				return this.buildQueryFromSourceParams([
+					new StringChunk("("),
+					chunk.getSQL(),
+					new StringChunk(")")
+				], config$2);
+			}
+			if (inlineParams) return {
+				sql: this.mapInlineParam(chunk, config$2),
+				params: []
+			};
+			return {
+				sql: escapeParam(paramStartIndex.value++, chunk),
+				params: [chunk],
+				typings: ["none"]
+			};
+		}));
+	}
+	mapInlineParam(chunk, { escapeString }) {
+		if (chunk === null) return "null";
+		if (typeof chunk === "number" || typeof chunk === "boolean") return chunk.toString();
+		if (typeof chunk === "string") return escapeString(chunk);
+		if (typeof chunk === "object") {
+			const mappedValueAsString = chunk.toString();
+			if (mappedValueAsString === "[object Object]") return escapeString(JSON.stringify(chunk));
+			return escapeString(mappedValueAsString);
+		}
+		throw new Error("Unexpected param value: " + chunk);
+	}
+	getSQL() {
+		return this;
+	}
+	as(alias) {
+		if (alias === void 0) return this;
+		return new SQL.Aliased(this, alias);
+	}
+	mapWith(decoder$1) {
+		this.decoder = typeof decoder$1 === "function" ? { mapFromDriverValue: decoder$1 } : decoder$1;
+		return this;
+	}
+	inlineParams() {
+		this.shouldInlineParams = true;
+		return this;
+	}
+	if(condition) {
+		return condition ? this : void 0;
+	}
+};
+var Name = class {
+	constructor(value) {
+		this.value = value;
+	}
+	static [entityKind] = "Name";
+	brand;
+	getSQL() {
+		return new SQL([this]);
+	}
+};
+function isDriverValueEncoder(value) {
+	return typeof value === "object" && value !== null && "mapToDriverValue" in value && typeof value.mapToDriverValue === "function";
+}
+var noopDecoder = { mapFromDriverValue: (value) => value };
+var noopEncoder = { mapToDriverValue: (value) => value };
+({
+	...noopDecoder,
+	...noopEncoder
+});
+var Param = class {
+	constructor(value, encoder$1 = noopEncoder) {
+		this.value = value;
+		this.encoder = encoder$1;
+	}
+	static [entityKind] = "Param";
+	brand;
+	getSQL() {
+		return new SQL([this]);
+	}
+};
+function sql(strings, ...params) {
+	const queryChunks = [];
+	if (params.length > 0 || strings.length > 0 && strings[0] !== "") queryChunks.push(new StringChunk(strings[0]));
+	for (const [paramIndex, param2] of params.entries()) queryChunks.push(param2, new StringChunk(strings[paramIndex + 1]));
+	return new SQL(queryChunks);
+}
+((sql2) => {
+	function empty() {
+		return new SQL([]);
+	}
+	sql2.empty = empty;
+	function fromList(list) {
+		return new SQL(list);
+	}
+	sql2.fromList = fromList;
+	function raw$1(str) {
+		return new SQL([new StringChunk(str)]);
+	}
+	sql2.raw = raw$1;
+	function join(chunks, separator) {
+		const result = [];
+		for (const [i, chunk] of chunks.entries()) {
+			if (i > 0 && separator !== void 0) result.push(separator);
+			result.push(chunk);
+		}
+		return new SQL(result);
+	}
+	sql2.join = join;
+	function identifier(value) {
+		return new Name(value);
+	}
+	sql2.identifier = identifier;
+	function placeholder2(name2) {
+		return new Placeholder(name2);
+	}
+	sql2.placeholder = placeholder2;
+	function param2(value, encoder$1) {
+		return new Param(value, encoder$1);
+	}
+	sql2.param = param2;
+})(sql || (sql = {}));
+((SQL2) => {
+	class Aliased {
+		constructor(sql2, fieldAlias) {
+			this.sql = sql2;
+			this.fieldAlias = fieldAlias;
+		}
+		static [entityKind] = "SQL.Aliased";
+		isSelectionField = false;
+		getSQL() {
+			return this.sql;
+		}
+		clone() {
+			return new Aliased(this.sql, this.fieldAlias);
+		}
+	}
+	SQL2.Aliased = Aliased;
+})(SQL || (SQL = {}));
+var Placeholder = class {
+	constructor(name2) {
+		this.name = name2;
+	}
+	static [entityKind] = "Placeholder";
+	getSQL() {
+		return new SQL([this]);
+	}
+};
+function fillPlaceholders(params, values) {
+	return params.map((p) => {
+		if (is(p, Placeholder)) {
+			if (!(p.name in values)) throw new Error(`No value for placeholder "${p.name}" was provided`);
+			return values[p.name];
+		}
+		if (is(p, Param) && is(p.value, Placeholder)) {
+			if (!(p.value.name in values)) throw new Error(`No value for placeholder "${p.value.name}" was provided`);
+			return p.encoder.mapToDriverValue(values[p.value.name]);
+		}
+		return p;
+	});
+}
+var IsDrizzleView = Symbol.for("drizzle:IsDrizzleView");
+var View = class {
+	static [entityKind] = "View";
+	[ViewBaseConfig];
+	[IsDrizzleView] = true;
+	constructor({ name: name2, schema: schema$1, selectedFields, query }) {
+		this[ViewBaseConfig] = {
+			name: name2,
+			originalName: name2,
+			schema: schema$1,
+			selectedFields,
+			query,
+			isExisting: !query,
+			isAlias: false
+		};
+	}
+	getSQL() {
+		return new SQL([this]);
+	}
+};
+Column.prototype.getSQL = function() {
+	return new SQL([this]);
+};
+Table.prototype.getSQL = function() {
+	return new SQL([this]);
+};
+Subquery.prototype.getSQL = function() {
+	return new SQL([this]);
+};
+var ColumnAliasProxyHandler = class {
+	constructor(table) {
+		this.table = table;
+	}
+	static [entityKind] = "ColumnAliasProxyHandler";
+	get(columnObj, prop) {
+		if (prop === "table") return this.table;
+		return columnObj[prop];
+	}
+};
+var TableAliasProxyHandler = class {
+	constructor(alias, replaceOriginalName) {
+		this.alias = alias;
+		this.replaceOriginalName = replaceOriginalName;
+	}
+	static [entityKind] = "TableAliasProxyHandler";
+	get(target, prop) {
+		if (prop === Table.Symbol.IsAlias) return true;
+		if (prop === Table.Symbol.Name) return this.alias;
+		if (this.replaceOriginalName && prop === Table.Symbol.OriginalName) return this.alias;
+		if (prop === ViewBaseConfig) return {
+			...target[ViewBaseConfig],
+			name: this.alias,
+			isAlias: true
+		};
+		if (prop === Table.Symbol.Columns) {
+			const columns = target[Table.Symbol.Columns];
+			if (!columns) return columns;
+			const proxiedColumns = {};
+			Object.keys(columns).map((key) => {
+				proxiedColumns[key] = new Proxy(columns[key], new ColumnAliasProxyHandler(new Proxy(target, this)));
+			});
+			return proxiedColumns;
+		}
+		const value = target[prop];
+		if (is(value, Column)) return new Proxy(value, new ColumnAliasProxyHandler(new Proxy(target, this)));
+		return value;
+	}
+};
+function aliasedTable(table, tableAlias) {
+	return new Proxy(table, new TableAliasProxyHandler(tableAlias, false));
+}
+function aliasedTableColumn(column, tableAlias) {
+	return new Proxy(column, new ColumnAliasProxyHandler(new Proxy(column.table, new TableAliasProxyHandler(tableAlias, false))));
+}
+function mapColumnsInAliasedSQLToAlias(query, alias) {
+	return new SQL.Aliased(mapColumnsInSQLToAlias(query.sql, alias), query.fieldAlias);
+}
+function mapColumnsInSQLToAlias(query, alias) {
+	return sql.join(query.queryChunks.map((c) => {
+		if (is(c, Column)) return aliasedTableColumn(c, alias);
+		if (is(c, SQL)) return mapColumnsInSQLToAlias(c, alias);
+		if (is(c, SQL.Aliased)) return mapColumnsInAliasedSQLToAlias(c, alias);
+		return c;
+	}));
+}
+var DrizzleError = class extends Error {
+	static [entityKind] = "DrizzleError";
+	constructor({ message: message$1, cause }) {
+		super(message$1);
+		this.name = "DrizzleError";
+		this.cause = cause;
+	}
+};
+var DrizzleQueryError = class DrizzleQueryError extends Error {
+	constructor(query, params, cause) {
+		super(`Failed query: ${query}
+params: ${params}`);
+		this.query = query;
+		this.params = params;
+		this.cause = cause;
+		Error.captureStackTrace(this, DrizzleQueryError);
+		if (cause) this.cause = cause;
+	}
+};
+var TransactionRollbackError = class extends DrizzleError {
+	static [entityKind] = "TransactionRollbackError";
+	constructor() {
+		super({ message: "Rollback" });
+	}
+};
+var ConsoleLogWriter = class {
+	static [entityKind] = "ConsoleLogWriter";
+	write(message$1) {
+		console.log(message$1);
+	}
+};
+var DefaultLogger = class {
+	static [entityKind] = "DefaultLogger";
+	writer;
+	constructor(config$2) {
+		this.writer = config$2?.writer ?? new ConsoleLogWriter();
+	}
+	logQuery(query, params) {
+		const stringifiedParams = params.map((p) => {
+			try {
+				return JSON.stringify(p);
+			} catch {
+				return String(p);
+			}
+		});
+		const paramsStr = stringifiedParams.length ? ` -- params: [${stringifiedParams.join(", ")}]` : "";
+		this.writer.write(`Query: ${query}${paramsStr}`);
+	}
+};
+var NoopLogger = class {
+	static [entityKind] = "NoopLogger";
+	logQuery() {}
+};
+var QueryPromise = class {
+	static [entityKind] = "QueryPromise";
+	[Symbol.toStringTag] = "QueryPromise";
+	catch(onRejected) {
+		return this.then(void 0, onRejected);
+	}
+	finally(onFinally) {
+		return this.then((value) => {
+			onFinally?.();
+			return value;
+		}, (reason) => {
+			onFinally?.();
+			throw reason;
+		});
+	}
+	then(onFulfilled, onRejected) {
+		return this.execute().then(onFulfilled, onRejected);
+	}
+};
+function mapResultRow(columns, row, joinsNotNullableMap) {
+	const nullifyMap = {};
+	const result = columns.reduce((result2, { path: path$1, field }, columnIndex) => {
+		let decoder$1;
+		if (is(field, Column)) decoder$1 = field;
+		else if (is(field, SQL)) decoder$1 = field.decoder;
+		else if (is(field, Subquery)) decoder$1 = field._.sql.decoder;
+		else decoder$1 = field.sql.decoder;
+		let node = result2;
+		for (const [pathChunkIndex, pathChunk] of path$1.entries()) if (pathChunkIndex < path$1.length - 1) {
+			if (!(pathChunk in node)) node[pathChunk] = {};
+			node = node[pathChunk];
+		} else {
+			const rawValue = row[columnIndex];
+			const value = node[pathChunk] = rawValue === null ? null : decoder$1.mapFromDriverValue(rawValue);
+			if (joinsNotNullableMap && is(field, Column) && path$1.length === 2) {
+				const objectName = path$1[0];
+				if (!(objectName in nullifyMap)) nullifyMap[objectName] = value === null ? getTableName(field.table) : false;
+				else if (typeof nullifyMap[objectName] === "string" && nullifyMap[objectName] !== getTableName(field.table)) nullifyMap[objectName] = false;
+			}
+		}
+		return result2;
+	}, {});
+	if (joinsNotNullableMap && Object.keys(nullifyMap).length > 0) {
+		for (const [objectName, tableName] of Object.entries(nullifyMap)) if (typeof tableName === "string" && !joinsNotNullableMap[tableName]) result[objectName] = null;
+	}
+	return result;
+}
+function orderSelectedFields(fields, pathPrefix) {
+	return Object.entries(fields).reduce((result, [name, field]) => {
+		if (typeof name !== "string") return result;
+		const newPath = pathPrefix ? [...pathPrefix, name] : [name];
+		if (is(field, Column) || is(field, SQL) || is(field, SQL.Aliased) || is(field, Subquery)) result.push({
+			path: newPath,
+			field
+		});
+		else if (is(field, Table)) result.push(...orderSelectedFields(field[Table.Symbol.Columns], newPath));
+		else result.push(...orderSelectedFields(field, newPath));
+		return result;
+	}, []);
+}
+function haveSameKeys(left, right) {
+	const leftKeys = Object.keys(left);
+	const rightKeys = Object.keys(right);
+	if (leftKeys.length !== rightKeys.length) return false;
+	for (const [index$1, key] of leftKeys.entries()) if (key !== rightKeys[index$1]) return false;
+	return true;
+}
+function mapUpdateSet(table, values) {
+	const entries = Object.entries(values).filter(([, value]) => value !== void 0).map(([key, value]) => {
+		if (is(value, SQL) || is(value, Column)) return [key, value];
+		else return [key, new Param(value, table[Table.Symbol.Columns][key])];
+	});
+	if (entries.length === 0) throw new Error("No values to set");
+	return Object.fromEntries(entries);
+}
+function applyMixins(baseClass, extendedClasses) {
+	for (const extendedClass of extendedClasses) for (const name of Object.getOwnPropertyNames(extendedClass.prototype)) {
+		if (name === "constructor") continue;
+		Object.defineProperty(baseClass.prototype, name, Object.getOwnPropertyDescriptor(extendedClass.prototype, name) || /* @__PURE__ */ Object.create(null));
+	}
+}
+function getTableColumns(table) {
+	return table[Table.Symbol.Columns];
+}
+function getTableLikeName(table) {
+	return is(table, Subquery) ? table._.alias : is(table, View) ? table[ViewBaseConfig].name : is(table, SQL) ? void 0 : table[Table.Symbol.IsAlias] ? table[Table.Symbol.Name] : table[Table.Symbol.BaseName];
+}
+function getColumnNameAndConfig(a, b) {
+	return {
+		name: typeof a === "string" && a.length > 0 ? a : "",
+		config: typeof a === "object" ? a : b
+	};
+}
+function isConfig(data) {
+	if (typeof data !== "object" || data === null) return false;
+	if (data.constructor.name !== "Object") return false;
+	if ("logger" in data) {
+		const type = typeof data["logger"];
+		if (type !== "boolean" && (type !== "object" || typeof data["logger"]["logQuery"] !== "function") && type !== "undefined") return false;
+		return true;
+	}
+	if ("schema" in data) {
+		const type = typeof data["schema"];
+		if (type !== "object" && type !== "undefined") return false;
+		return true;
+	}
+	if ("casing" in data) {
+		const type = typeof data["casing"];
+		if (type !== "string" && type !== "undefined") return false;
+		return true;
+	}
+	if ("mode" in data) {
+		if (data["mode"] !== "default" || data["mode"] !== "planetscale" || data["mode"] !== void 0) return false;
+		return true;
+	}
+	if ("connection" in data) {
+		const type = typeof data["connection"];
+		if (type !== "string" && type !== "object" && type !== "undefined") return false;
+		return true;
+	}
+	if ("client" in data) {
+		const type = typeof data["client"];
+		if (type !== "object" && type !== "function" && type !== "undefined") return false;
+		return true;
+	}
+	if (Object.keys(data).length === 0) return true;
+	return false;
+}
+var textDecoder = typeof TextDecoder === "undefined" ? null : new TextDecoder();
+var InlineForeignKeys$1 = Symbol.for("drizzle:PgInlineForeignKeys");
+var EnableRLS = Symbol.for("drizzle:EnableRLS");
+var PgTable = class extends Table {
+	static [entityKind] = "PgTable";
+	static Symbol = Object.assign({}, Table.Symbol, {
+		InlineForeignKeys: InlineForeignKeys$1,
+		EnableRLS
+	});
+	[InlineForeignKeys$1] = [];
+	[EnableRLS] = false;
+	[Table.Symbol.ExtraConfigBuilder] = void 0;
+	[Table.Symbol.ExtraConfigColumns] = {};
+};
+var PrimaryKeyBuilder = class {
+	static [entityKind] = "PgPrimaryKeyBuilder";
+	columns;
+	name;
+	constructor(columns, name) {
+		this.columns = columns;
+		this.name = name;
+	}
+	build(table) {
+		return new PrimaryKey(table, this.columns, this.name);
+	}
+};
+var PrimaryKey = class {
+	constructor(table, columns, name) {
+		this.table = table;
+		this.columns = columns;
+		this.name = name;
+	}
+	static [entityKind] = "PgPrimaryKey";
+	columns;
+	name;
+	getName() {
+		return this.name ?? `${this.table[PgTable.Symbol.Name]}_${this.columns.map((column) => column.name).join("_")}_pk`;
+	}
+};
+function bindIfParam(value, column) {
+	if (isDriverValueEncoder(column) && !isSQLWrapper(value) && !is(value, Param) && !is(value, Placeholder) && !is(value, Column) && !is(value, Table) && !is(value, View)) return new Param(value, column);
+	return value;
+}
+var eq = (left, right) => {
+	return sql`${left} = ${bindIfParam(right, left)}`;
+};
+var ne = (left, right) => {
+	return sql`${left} <> ${bindIfParam(right, left)}`;
+};
+function and(...unfilteredConditions) {
+	const conditions = unfilteredConditions.filter((c) => c !== void 0);
+	if (conditions.length === 0) return;
+	if (conditions.length === 1) return new SQL(conditions);
+	return new SQL([
+		new StringChunk("("),
+		sql.join(conditions, new StringChunk(" and ")),
+		new StringChunk(")")
+	]);
+}
+function or(...unfilteredConditions) {
+	const conditions = unfilteredConditions.filter((c) => c !== void 0);
+	if (conditions.length === 0) return;
+	if (conditions.length === 1) return new SQL(conditions);
+	return new SQL([
+		new StringChunk("("),
+		sql.join(conditions, new StringChunk(" or ")),
+		new StringChunk(")")
+	]);
+}
+function not(condition) {
+	return sql`not ${condition}`;
+}
+var gt = (left, right) => {
+	return sql`${left} > ${bindIfParam(right, left)}`;
+};
+var gte = (left, right) => {
+	return sql`${left} >= ${bindIfParam(right, left)}`;
+};
+var lt = (left, right) => {
+	return sql`${left} < ${bindIfParam(right, left)}`;
+};
+var lte = (left, right) => {
+	return sql`${left} <= ${bindIfParam(right, left)}`;
+};
+function inArray(column, values) {
+	if (Array.isArray(values)) {
+		if (values.length === 0) return sql`false`;
+		return sql`${column} in ${values.map((v) => bindIfParam(v, column))}`;
+	}
+	return sql`${column} in ${bindIfParam(values, column)}`;
+}
+function notInArray(column, values) {
+	if (Array.isArray(values)) {
+		if (values.length === 0) return sql`true`;
+		return sql`${column} not in ${values.map((v) => bindIfParam(v, column))}`;
+	}
+	return sql`${column} not in ${bindIfParam(values, column)}`;
+}
+function isNull(value) {
+	return sql`${value} is null`;
+}
+function isNotNull(value) {
+	return sql`${value} is not null`;
+}
+function exists(subquery) {
+	return sql`exists ${subquery}`;
+}
+function notExists(subquery) {
+	return sql`not exists ${subquery}`;
+}
+function between(column, min, max) {
+	return sql`${column} between ${bindIfParam(min, column)} and ${bindIfParam(max, column)}`;
+}
+function notBetween(column, min, max) {
+	return sql`${column} not between ${bindIfParam(min, column)} and ${bindIfParam(max, column)}`;
+}
+function like(column, value) {
+	return sql`${column} like ${value}`;
+}
+function notLike(column, value) {
+	return sql`${column} not like ${value}`;
+}
+function ilike(column, value) {
+	return sql`${column} ilike ${value}`;
+}
+function notIlike(column, value) {
+	return sql`${column} not ilike ${value}`;
+}
+function asc(column) {
+	return sql`${column} asc`;
+}
+function desc(column) {
+	return sql`${column} desc`;
+}
+var Relation = class {
+	constructor(sourceTable, referencedTable, relationName) {
+		this.sourceTable = sourceTable;
+		this.referencedTable = referencedTable;
+		this.relationName = relationName;
+		this.referencedTableName = referencedTable[Table.Symbol.Name];
+	}
+	static [entityKind] = "Relation";
+	referencedTableName;
+	fieldName;
+};
+var Relations = class {
+	constructor(table, config$2) {
+		this.table = table;
+		this.config = config$2;
+	}
+	static [entityKind] = "Relations";
+};
+var One = class One extends Relation {
+	constructor(sourceTable, referencedTable, config$2, isNullable) {
+		super(sourceTable, referencedTable, config$2?.relationName);
+		this.config = config$2;
+		this.isNullable = isNullable;
+	}
+	static [entityKind] = "One";
+	withFieldName(fieldName) {
+		const relation = new One(this.sourceTable, this.referencedTable, this.config, this.isNullable);
+		relation.fieldName = fieldName;
+		return relation;
+	}
+};
+var Many = class Many extends Relation {
+	constructor(sourceTable, referencedTable, config$2) {
+		super(sourceTable, referencedTable, config$2?.relationName);
+		this.config = config$2;
+	}
+	static [entityKind] = "Many";
+	withFieldName(fieldName) {
+		const relation = new Many(this.sourceTable, this.referencedTable, this.config);
+		relation.fieldName = fieldName;
+		return relation;
+	}
+};
+function getOperators() {
+	return {
+		and,
+		between,
+		eq,
+		exists,
+		gt,
+		gte,
+		ilike,
+		inArray,
+		isNull,
+		isNotNull,
+		like,
+		lt,
+		lte,
+		ne,
+		not,
+		notBetween,
+		notExists,
+		notLike,
+		notIlike,
+		notInArray,
+		or,
+		sql
+	};
+}
+function getOrderByOperators() {
+	return {
+		sql,
+		asc,
+		desc
+	};
+}
+function extractTablesRelationalConfig(schema$1, configHelpers) {
+	if (Object.keys(schema$1).length === 1 && "default" in schema$1 && !is(schema$1["default"], Table)) schema$1 = schema$1["default"];
+	const tableNamesMap = {};
+	const relationsBuffer = {};
+	const tablesConfig = {};
+	for (const [key, value] of Object.entries(schema$1)) if (is(value, Table)) {
+		const dbName = getTableUniqueName(value);
+		const bufferedRelations = relationsBuffer[dbName];
+		tableNamesMap[dbName] = key;
+		tablesConfig[key] = {
+			tsName: key,
+			dbName: value[Table.Symbol.Name],
+			schema: value[Table.Symbol.Schema],
+			columns: value[Table.Symbol.Columns],
+			relations: bufferedRelations?.relations ?? {},
+			primaryKey: bufferedRelations?.primaryKey ?? []
+		};
+		for (const column of Object.values(value[Table.Symbol.Columns])) if (column.primary) tablesConfig[key].primaryKey.push(column);
+		const extraConfig = value[Table.Symbol.ExtraConfigBuilder]?.(value[Table.Symbol.ExtraConfigColumns]);
+		if (extraConfig) {
+			for (const configEntry of Object.values(extraConfig)) if (is(configEntry, PrimaryKeyBuilder)) tablesConfig[key].primaryKey.push(...configEntry.columns);
+		}
+	} else if (is(value, Relations)) {
+		const dbName = getTableUniqueName(value.table);
+		const tableName = tableNamesMap[dbName];
+		const relations2 = value.config(configHelpers(value.table));
+		let primaryKey;
+		for (const [relationName, relation] of Object.entries(relations2)) if (tableName) {
+			const tableConfig = tablesConfig[tableName];
+			tableConfig.relations[relationName] = relation;
+		} else {
+			if (!(dbName in relationsBuffer)) relationsBuffer[dbName] = {
+				relations: {},
+				primaryKey
+			};
+			relationsBuffer[dbName].relations[relationName] = relation;
+		}
+	}
+	return {
+		tables: tablesConfig,
+		tableNamesMap
+	};
+}
+function createOne(sourceTable) {
+	return function one(table, config$2) {
+		return new One(sourceTable, table, config$2, config$2?.fields.reduce((res, f) => res && f.notNull, true) ?? false);
+	};
+}
+function createMany(sourceTable) {
+	return function many(referencedTable, config$2) {
+		return new Many(sourceTable, referencedTable, config$2);
+	};
+}
+function normalizeRelation(schema$1, tableNamesMap, relation) {
+	if (is(relation, One) && relation.config) return {
+		fields: relation.config.fields,
+		references: relation.config.references
+	};
+	const referencedTableTsName = tableNamesMap[getTableUniqueName(relation.referencedTable)];
+	if (!referencedTableTsName) throw new Error(`Table "${relation.referencedTable[Table.Symbol.Name]}" not found in schema`);
+	const referencedTableConfig = schema$1[referencedTableTsName];
+	if (!referencedTableConfig) throw new Error(`Table "${referencedTableTsName}" not found in schema`);
+	const sourceTable = relation.sourceTable;
+	const sourceTableTsName = tableNamesMap[getTableUniqueName(sourceTable)];
+	if (!sourceTableTsName) throw new Error(`Table "${sourceTable[Table.Symbol.Name]}" not found in schema`);
+	const reverseRelations = [];
+	for (const referencedTableRelation of Object.values(referencedTableConfig.relations)) if (relation.relationName && relation !== referencedTableRelation && referencedTableRelation.relationName === relation.relationName || !relation.relationName && referencedTableRelation.referencedTable === relation.sourceTable) reverseRelations.push(referencedTableRelation);
+	if (reverseRelations.length > 1) throw relation.relationName ? /* @__PURE__ */ new Error(`There are multiple relations with name "${relation.relationName}" in table "${referencedTableTsName}"`) : /* @__PURE__ */ new Error(`There are multiple relations between "${referencedTableTsName}" and "${relation.sourceTable[Table.Symbol.Name]}". Please specify relation name`);
+	if (reverseRelations[0] && is(reverseRelations[0], One) && reverseRelations[0].config) return {
+		fields: reverseRelations[0].config.references,
+		references: reverseRelations[0].config.fields
+	};
+	throw new Error(`There is not enough information to infer relation "${sourceTableTsName}.${relation.fieldName}"`);
+}
+function createTableRelationsHelpers(sourceTable) {
+	return {
+		one: createOne(sourceTable),
+		many: createMany(sourceTable)
+	};
+}
+function mapRelationalRow(tablesConfig, tableConfig, row, buildQueryResultSelection, mapColumnValue = (value) => value) {
+	const result = {};
+	for (const [selectionItemIndex, selectionItem] of buildQueryResultSelection.entries()) if (selectionItem.isJson) {
+		const relation = tableConfig.relations[selectionItem.tsKey];
+		const rawSubRows = row[selectionItemIndex];
+		const subRows = typeof rawSubRows === "string" ? JSON.parse(rawSubRows) : rawSubRows;
+		result[selectionItem.tsKey] = is(relation, One) ? subRows && mapRelationalRow(tablesConfig, tablesConfig[selectionItem.relationTableTsKey], subRows, selectionItem.selection, mapColumnValue) : subRows.map((subRow) => mapRelationalRow(tablesConfig, tablesConfig[selectionItem.relationTableTsKey], subRow, selectionItem.selection, mapColumnValue));
+	} else {
+		const value = mapColumnValue(row[selectionItemIndex]);
+		const field = selectionItem.field;
+		let decoder$1;
+		if (is(field, Column)) decoder$1 = field;
+		else if (is(field, SQL)) decoder$1 = field.decoder;
+		else decoder$1 = field.sql.decoder;
+		result[selectionItem.tsKey] = value === null ? null : decoder$1.mapFromDriverValue(value);
+	}
+	return result;
+}
+function count(expression) {
+	return sql`count(${expression || sql.raw("*")})`.mapWith(Number);
+}
+function apiSuccess(data) {
+	return {
+		ok: true,
+		data
+	};
+}
+function apiFailure(code, message$1) {
+	return {
+		ok: false,
+		error: {
+			code,
+			message: message$1
+		}
+	};
+}
+function escapeRegExpChar(char) {
+	if (char === "-" || char === "^" || char === "$" || char === "+" || char === "." || char === "(" || char === ")" || char === "|" || char === "[" || char === "]" || char === "{" || char === "}" || char === "*" || char === "?" || char === "\\") return `\\${char}`;
+	else return char;
+}
+function escapeRegExpString(str) {
+	let result = "";
+	for (let i = 0; i < str.length; i++) result += escapeRegExpChar(str[i]);
+	return result;
+}
+function transform$1(pattern, separator = true) {
+	if (Array.isArray(pattern)) return `(?:${pattern.map((p) => `^${transform$1(p, separator)}$`).join("|")})`;
+	let separatorSplitter = "";
+	let separatorMatcher = "";
+	let wildcard = ".";
+	if (separator === true) {
+		separatorSplitter = "/";
+		separatorMatcher = "[/\\\\]";
+		wildcard = "[^/\\\\]";
+	} else if (separator) {
+		separatorSplitter = separator;
+		separatorMatcher = escapeRegExpString(separatorSplitter);
+		if (separatorMatcher.length > 1) {
+			separatorMatcher = `(?:${separatorMatcher})`;
+			wildcard = `((?!${separatorMatcher}).)`;
+		} else wildcard = `[^${separatorMatcher}]`;
+	}
+	const requiredSeparator = separator ? `${separatorMatcher}+?` : "";
+	const optionalSeparator = separator ? `${separatorMatcher}*?` : "";
+	const segments = separator ? pattern.split(separatorSplitter) : [pattern];
+	let result = "";
+	for (let s = 0; s < segments.length; s++) {
+		const segment = segments[s];
+		const nextSegment = segments[s + 1];
+		let currentSeparator = "";
+		if (!segment && s > 0) continue;
+		if (separator) if (s === segments.length - 1) currentSeparator = optionalSeparator;
+		else if (nextSegment !== "**") currentSeparator = requiredSeparator;
+		else currentSeparator = "";
+		if (separator && segment === "**") {
+			if (currentSeparator) {
+				result += s === 0 ? "" : currentSeparator;
+				result += `(?:${wildcard}*?${currentSeparator})*?`;
+			}
+			continue;
+		}
+		for (let c = 0; c < segment.length; c++) {
+			const char = segment[c];
+			if (char === "\\") {
+				if (c < segment.length - 1) {
+					result += escapeRegExpChar(segment[c + 1]);
+					c++;
+				}
+			} else if (char === "?") result += wildcard;
+			else if (char === "*") result += `${wildcard}*?`;
+			else result += escapeRegExpChar(char);
+		}
+		result += currentSeparator;
+	}
+	return result;
+}
+function isMatch(regexp, sample) {
+	if (typeof sample !== "string") throw new TypeError(`Sample must be a string, but ${typeof sample} given`);
+	return regexp.test(sample);
+}
+function wildcardMatch(pattern, options) {
+	if (typeof pattern !== "string" && !Array.isArray(pattern)) throw new TypeError(`The first argument must be a single pattern string or an array of patterns, but ${typeof pattern} given`);
+	if (typeof options === "string" || typeof options === "boolean") options = { separator: options };
+	if (arguments.length === 2 && !(typeof options === "undefined" || typeof options === "object" && options !== null && !Array.isArray(options))) throw new TypeError(`The second argument must be an options object or a string/boolean separator, but ${typeof options} given`);
+	options = options || {};
+	if (options.separator === "\\") throw new Error("\\ is not a valid separator because it is used for escaping. Try setting the separator to `true` instead");
+	const regexpPattern = transform$1(pattern, options.separator);
+	const regexp = new RegExp(`^${regexpPattern}$`, options.flags);
+	const fn = isMatch.bind(null, regexp);
+	fn.options = options;
+	fn.pattern = pattern;
+	fn.regexp = regexp;
+	return fn;
+}
+var _envShim = Object.create(null);
+var _getEnv = (useShim) => globalThis.process?.env || globalThis.Deno?.env.toObject() || globalThis.__env__ || (useShim ? _envShim : globalThis);
+var env$1 = new Proxy(_envShim, {
+	get(_, prop) {
+		return _getEnv()[prop] ?? _envShim[prop];
+	},
+	has(_, prop) {
+		return prop in _getEnv() || prop in _envShim;
+	},
+	set(_, prop, value) {
+		const env$2 = _getEnv(true);
+		env$2[prop] = value;
+		return true;
+	},
+	deleteProperty(_, prop) {
+		if (!prop) return false;
+		const env$2 = _getEnv(true);
+		delete env$2[prop];
+		return true;
+	},
+	ownKeys() {
+		const env$2 = _getEnv(true);
+		return Object.keys(env$2);
+	}
+});
+function toBoolean(val) {
+	return val ? val !== "false" : false;
+}
+var nodeENV = typeof process !== "undefined" && process.env && process.env.NODE_ENV || "";
+var isProduction = nodeENV === "production";
+var isDevelopment = () => nodeENV === "dev" || nodeENV === "development";
+var isTest = () => nodeENV === "test" || toBoolean(env$1.TEST);
+function getEnvVar(key, fallback) {
+	if (typeof process !== "undefined" && process.env) return process.env[key] ?? fallback;
+	if (typeof Deno !== "undefined") return Deno.env.get(key) ?? fallback;
+	if (typeof Bun !== "undefined") return Bun.env[key] ?? fallback;
+	return fallback;
+}
+function getBooleanEnvVar(key, fallback = true) {
+	const value = getEnvVar(key);
+	if (!value) return fallback;
+	return value !== "0" && value.toLowerCase() !== "false" && value !== "";
+}
+var ENV = Object.freeze({
+	get BETTER_AUTH_SECRET() {
+		return getEnvVar("BETTER_AUTH_SECRET");
+	},
+	get AUTH_SECRET() {
+		return getEnvVar("AUTH_SECRET");
+	},
+	get BETTER_AUTH_TELEMETRY() {
+		return getEnvVar("BETTER_AUTH_TELEMETRY");
+	},
+	get BETTER_AUTH_TELEMETRY_ID() {
+		return getEnvVar("BETTER_AUTH_TELEMETRY_ID");
+	},
+	get NODE_ENV() {
+		return getEnvVar("NODE_ENV", "development");
+	},
+	get PACKAGE_VERSION() {
+		return getEnvVar("PACKAGE_VERSION", "0.0.0");
+	},
+	get BETTER_AUTH_TELEMETRY_ENDPOINT() {
+		return getEnvVar("BETTER_AUTH_TELEMETRY_ENDPOINT", "");
+	}
+});
+var COLORS_2 = 1;
+var COLORS_16 = 4;
+var COLORS_256 = 8;
+var COLORS_16m = 24;
+var TERM_ENVS = {
+	eterm: COLORS_16,
+	cons25: COLORS_16,
+	console: COLORS_16,
+	cygwin: COLORS_16,
+	dtterm: COLORS_16,
+	gnome: COLORS_16,
+	hurd: COLORS_16,
+	jfbterm: COLORS_16,
+	konsole: COLORS_16,
+	kterm: COLORS_16,
+	mlterm: COLORS_16,
+	mosh: COLORS_16m,
+	putty: COLORS_16,
+	st: COLORS_16,
+	"rxvt-unicode-24bit": COLORS_16m,
+	terminator: COLORS_16m,
+	"xterm-kitty": COLORS_16m
+};
+var CI_ENVS_MAP = new Map(Object.entries({
+	APPVEYOR: COLORS_256,
+	BUILDKITE: COLORS_256,
+	CIRCLECI: COLORS_16m,
+	DRONE: COLORS_256,
+	GITEA_ACTIONS: COLORS_16m,
+	GITHUB_ACTIONS: COLORS_16m,
+	GITLAB_CI: COLORS_256,
+	TRAVIS: COLORS_256
+}));
+var TERM_ENVS_REG_EXP = [
+	/ansi/,
+	/color/,
+	/linux/,
+	/direct/,
+	/^con[0-9]*x[0-9]/,
+	/^rxvt/,
+	/^screen/,
+	/^xterm/,
+	/^vt100/,
+	/^vt220/
+];
+function getColorDepth() {
+	if (getEnvVar("FORCE_COLOR") !== void 0) switch (getEnvVar("FORCE_COLOR")) {
+		case "":
+		case "1":
+		case "true": return COLORS_16;
+		case "2": return COLORS_256;
+		case "3": return COLORS_16m;
+		default: return COLORS_2;
+	}
+	if (getEnvVar("NODE_DISABLE_COLORS") !== void 0 && getEnvVar("NODE_DISABLE_COLORS") !== "" || getEnvVar("NO_COLOR") !== void 0 && getEnvVar("NO_COLOR") !== "" || getEnvVar("TERM") === "dumb") return COLORS_2;
+	if (getEnvVar("TMUX")) return COLORS_16m;
+	if ("TF_BUILD" in env$1 && "AGENT_NAME" in env$1) return COLORS_16;
+	if ("CI" in env$1) {
+		for (const { 0: envName, 1: colors } of CI_ENVS_MAP) if (envName in env$1) return colors;
+		if (getEnvVar("CI_NAME") === "codeship") return COLORS_256;
+		return COLORS_2;
+	}
+	if ("TEAMCITY_VERSION" in env$1) return /^(9\.(0*[1-9]\d*)\.|\d{2,}\.)/.exec(getEnvVar("TEAMCITY_VERSION")) !== null ? COLORS_16 : COLORS_2;
+	switch (getEnvVar("TERM_PROGRAM")) {
+		case "iTerm.app":
+			if (!getEnvVar("TERM_PROGRAM_VERSION") || /^[0-2]\./.exec(getEnvVar("TERM_PROGRAM_VERSION")) !== null) return COLORS_256;
+			return COLORS_16m;
+		case "HyperTerm":
+		case "MacTerm": return COLORS_16m;
+		case "Apple_Terminal": return COLORS_256;
+	}
+	if (getEnvVar("COLORTERM") === "truecolor" || getEnvVar("COLORTERM") === "24bit") return COLORS_16m;
+	if (getEnvVar("TERM")) {
+		if (/truecolor/.exec(getEnvVar("TERM")) !== null) return COLORS_16m;
+		if (/^xterm-256/.exec(getEnvVar("TERM")) !== null) return COLORS_256;
+		const termEnv = getEnvVar("TERM").toLowerCase();
+		if (TERM_ENVS[termEnv]) return TERM_ENVS[termEnv];
+		if (TERM_ENVS_REG_EXP.some((term) => term.exec(termEnv) !== null)) return COLORS_16;
+	}
+	if (getEnvVar("COLORTERM")) return COLORS_16;
+	return COLORS_2;
+}
+var TTY_COLORS = {
+	reset: "\x1B[0m",
+	bright: "\x1B[1m",
+	dim: "\x1B[2m",
+	undim: "\x1B[22m",
+	underscore: "\x1B[4m",
+	blink: "\x1B[5m",
+	reverse: "\x1B[7m",
+	hidden: "\x1B[8m",
+	fg: {
+		black: "\x1B[30m",
+		red: "\x1B[31m",
+		green: "\x1B[32m",
+		yellow: "\x1B[33m",
+		blue: "\x1B[34m",
+		magenta: "\x1B[35m",
+		cyan: "\x1B[36m",
+		white: "\x1B[37m"
+	},
+	bg: {
+		black: "\x1B[40m",
+		red: "\x1B[41m",
+		green: "\x1B[42m",
+		yellow: "\x1B[43m",
+		blue: "\x1B[44m",
+		magenta: "\x1B[45m",
+		cyan: "\x1B[46m",
+		white: "\x1B[47m"
+	}
+};
+var levels = [
+	"debug",
+	"info",
+	"success",
+	"warn",
+	"error"
+];
+function shouldPublishLog(currentLogLevel, logLevel) {
+	return levels.indexOf(logLevel) >= levels.indexOf(currentLogLevel);
+}
+var levelColors = {
+	info: TTY_COLORS.fg.blue,
+	success: TTY_COLORS.fg.green,
+	warn: TTY_COLORS.fg.yellow,
+	error: TTY_COLORS.fg.red,
+	debug: TTY_COLORS.fg.magenta
+};
+var formatMessage = (level, message$1, colorsEnabled) => {
+	const timestamp = (/* @__PURE__ */ new Date()).toISOString();
+	if (colorsEnabled) return `${TTY_COLORS.dim}${timestamp}${TTY_COLORS.reset} ${levelColors[level]}${level.toUpperCase()}${TTY_COLORS.reset} ${TTY_COLORS.bright}[Better Auth]:${TTY_COLORS.reset} ${message$1}`;
+	return `${timestamp} ${level.toUpperCase()} [Better Auth]: ${message$1}`;
+};
+var createLogger = (options) => {
+	const enabled = options?.disabled !== true;
+	const logLevel = options?.level ?? "warn";
+	const colorsEnabled = options?.disableColors !== void 0 ? !options.disableColors : getColorDepth() !== 1;
+	const LogFunc = (level, message$1, args = []) => {
+		if (!enabled || !shouldPublishLog(logLevel, level)) return;
+		const formattedMessage = formatMessage(level, message$1, colorsEnabled);
+		if (!options || typeof options.log !== "function") {
+			if (level === "error") console.error(formattedMessage, ...args);
+			else if (level === "warn") console.warn(formattedMessage, ...args);
+			else console.log(formattedMessage, ...args);
+			return;
+		}
+		options.log(level === "success" ? "info" : level, message$1, ...args);
+	};
+	return {
+		...Object.fromEntries(levels.map((level) => [level, (...[message$1, ...args]) => LogFunc(level, message$1, args)])),
+		get level() {
+			return logLevel;
+		}
+	};
+};
+var logger = createLogger();
+function defineErrorCodes(codes) {
+	return Object.fromEntries(Object.entries(codes).map(([key, value]) => [key, {
+		code: key,
+		message: value,
+		toString: () => key
+	}]));
+}
+var BASE_ERROR_CODES = defineErrorCodes({
+	USER_NOT_FOUND: "User not found",
+	FAILED_TO_CREATE_USER: "Failed to create user",
+	FAILED_TO_CREATE_SESSION: "Failed to create session",
+	FAILED_TO_UPDATE_USER: "Failed to update user",
+	FAILED_TO_GET_SESSION: "Failed to get session",
+	INVALID_PASSWORD: "Invalid password",
+	INVALID_EMAIL: "Invalid email",
+	INVALID_EMAIL_OR_PASSWORD: "Invalid email or password",
+	INVALID_USER: "Invalid user",
+	SOCIAL_ACCOUNT_ALREADY_LINKED: "Social account already linked",
+	PROVIDER_NOT_FOUND: "Provider not found",
+	INVALID_TOKEN: "Invalid token",
+	TOKEN_EXPIRED: "Token expired",
+	ID_TOKEN_NOT_SUPPORTED: "id_token not supported",
+	FAILED_TO_GET_USER_INFO: "Failed to get user info",
+	USER_EMAIL_NOT_FOUND: "User email not found",
+	EMAIL_NOT_VERIFIED: "Email not verified",
+	PASSWORD_TOO_SHORT: "Password too short",
+	PASSWORD_TOO_LONG: "Password too long",
+	USER_ALREADY_EXISTS: "User already exists.",
+	USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL: "User already exists. Use another email.",
+	EMAIL_CAN_NOT_BE_UPDATED: "Email can not be updated",
+	CHANGE_EMAIL_DISABLED: "Change email is disabled",
+	CREDENTIAL_ACCOUNT_NOT_FOUND: "Credential account not found",
+	SESSION_EXPIRED: "Session expired. Re-authenticate to perform this action.",
+	FAILED_TO_UNLINK_LAST_ACCOUNT: "You can't unlink your last account",
+	ACCOUNT_NOT_FOUND: "Account not found",
+	USER_ALREADY_HAS_PASSWORD: "User already has a password. Provide that to delete the account.",
+	CROSS_SITE_NAVIGATION_LOGIN_BLOCKED: "Cross-site navigation login blocked. This request appears to be a CSRF attack.",
+	VERIFICATION_EMAIL_NOT_ENABLED: "Verification email isn't enabled",
+	EMAIL_ALREADY_VERIFIED: "Email is already verified",
+	EMAIL_MISMATCH: "Email mismatch",
+	SESSION_NOT_FRESH: "Session is not fresh",
+	LINKED_ACCOUNT_ALREADY_EXISTS: "Linked account already exists",
+	INVALID_ORIGIN: "Invalid origin",
+	INVALID_CALLBACK_URL: "Invalid callbackURL",
+	INVALID_REDIRECT_URL: "Invalid redirectURL",
+	INVALID_ERROR_CALLBACK_URL: "Invalid errorCallbackURL",
+	INVALID_NEW_USER_CALLBACK_URL: "Invalid newUserCallbackURL",
+	MISSING_OR_NULL_ORIGIN: "Missing or null Origin",
+	CALLBACK_URL_REQUIRED: "callbackURL is required",
+	FAILED_TO_CREATE_VERIFICATION: "Unable to create verification",
+	FIELD_NOT_ALLOWED: "Field not allowed to be set",
+	ASYNC_VALIDATION_NOT_SUPPORTED: "Async validation is not supported",
+	VALIDATION_ERROR: "Validation Error",
+	MISSING_FIELD: "Field is required",
+	METHOD_NOT_ALLOWED_DEFER_SESSION_REQUIRED: "POST method requires deferSessionRefresh to be enabled in session config",
+	BODY_MUST_BE_AN_OBJECT: "Body must be an object",
+	PASSWORD_ALREADY_SET: "User already has a password set"
+});
+function isErrorStackTraceLimitWritable() {
+	const desc$1 = Object.getOwnPropertyDescriptor(Error, "stackTraceLimit");
+	if (desc$1 === void 0) return Object.isExtensible(Error);
+	return Object.prototype.hasOwnProperty.call(desc$1, "writable") ? desc$1.writable : desc$1.set !== void 0;
+}
+function hideInternalStackFrames(stack) {
+	const lines = stack.split("\n    at ");
+	if (lines.length <= 1) return stack;
+	lines.splice(1, 1);
+	return lines.join("\n    at ");
+}
+function makeErrorForHideStackFrame(Base, clazz) {
+	class HideStackFramesError extends Base {
+		#hiddenStack;
+		constructor(...args) {
+			if (isErrorStackTraceLimitWritable()) {
+				const limit = Error.stackTraceLimit;
+				Error.stackTraceLimit = 0;
+				super(...args);
+				Error.stackTraceLimit = limit;
+			} else super(...args);
+			const stack = (/* @__PURE__ */ new Error()).stack;
+			if (stack) this.#hiddenStack = hideInternalStackFrames(stack.replace(/^Error/, this.name));
+		}
+		get errorStack() {
+			return this.#hiddenStack;
+		}
+	}
+	Object.defineProperty(HideStackFramesError.prototype, "constructor", {
+		get() {
+			return clazz;
+		},
+		enumerable: false,
+		configurable: true
+	});
+	return HideStackFramesError;
+}
+var statusCodes = {
+	OK: 200,
+	CREATED: 201,
+	ACCEPTED: 202,
+	NO_CONTENT: 204,
+	MULTIPLE_CHOICES: 300,
+	MOVED_PERMANENTLY: 301,
+	FOUND: 302,
+	SEE_OTHER: 303,
+	NOT_MODIFIED: 304,
+	TEMPORARY_REDIRECT: 307,
+	BAD_REQUEST: 400,
+	UNAUTHORIZED: 401,
+	PAYMENT_REQUIRED: 402,
+	FORBIDDEN: 403,
+	NOT_FOUND: 404,
+	METHOD_NOT_ALLOWED: 405,
+	NOT_ACCEPTABLE: 406,
+	PROXY_AUTHENTICATION_REQUIRED: 407,
+	REQUEST_TIMEOUT: 408,
+	CONFLICT: 409,
+	GONE: 410,
+	LENGTH_REQUIRED: 411,
+	PRECONDITION_FAILED: 412,
+	PAYLOAD_TOO_LARGE: 413,
+	URI_TOO_LONG: 414,
+	UNSUPPORTED_MEDIA_TYPE: 415,
+	RANGE_NOT_SATISFIABLE: 416,
+	EXPECTATION_FAILED: 417,
+	"I'M_A_TEAPOT": 418,
+	MISDIRECTED_REQUEST: 421,
+	UNPROCESSABLE_ENTITY: 422,
+	LOCKED: 423,
+	FAILED_DEPENDENCY: 424,
+	TOO_EARLY: 425,
+	UPGRADE_REQUIRED: 426,
+	PRECONDITION_REQUIRED: 428,
+	TOO_MANY_REQUESTS: 429,
+	REQUEST_HEADER_FIELDS_TOO_LARGE: 431,
+	UNAVAILABLE_FOR_LEGAL_REASONS: 451,
+	INTERNAL_SERVER_ERROR: 500,
+	NOT_IMPLEMENTED: 501,
+	BAD_GATEWAY: 502,
+	SERVICE_UNAVAILABLE: 503,
+	GATEWAY_TIMEOUT: 504,
+	HTTP_VERSION_NOT_SUPPORTED: 505,
+	VARIANT_ALSO_NEGOTIATES: 506,
+	INSUFFICIENT_STORAGE: 507,
+	LOOP_DETECTED: 508,
+	NOT_EXTENDED: 510,
+	NETWORK_AUTHENTICATION_REQUIRED: 511
+};
+var InternalAPIError = class extends Error {
+	constructor(status = "INTERNAL_SERVER_ERROR", body = void 0, headers = {}, statusCode = typeof status === "number" ? status : statusCodes[status]) {
+		super(body?.message, body?.cause ? { cause: body.cause } : void 0);
+		this.status = status;
+		this.body = body;
+		this.headers = headers;
+		this.statusCode = statusCode;
+		this.name = "APIError";
+		this.status = status;
+		this.headers = headers;
+		this.statusCode = statusCode;
+		this.body = body;
+	}
+};
+var ValidationError$1 = class extends InternalAPIError {
+	constructor(message$1, issues) {
+		super(400, {
+			message: message$1,
+			code: "VALIDATION_ERROR"
+		});
+		this.message = message$1;
+		this.issues = issues;
+		this.issues = issues;
+	}
+};
+var BetterCallError = class extends Error {
+	constructor(message$1) {
+		super(message$1);
+		this.name = "BetterCallError";
+	}
+};
+var kAPIErrorHeaderSymbol = Symbol.for("better-call:api-error-headers");
+var APIError$1 = makeErrorForHideStackFrame(InternalAPIError, Error);
+var BetterAuthError = class extends Error {
+	constructor(message$1, options) {
+		super(message$1, options);
+		this.name = "BetterAuthError";
+		this.message = message$1;
+		this.stack = "";
+	}
+};
+var APIError = class APIError$2 extends APIError$1 {
+	constructor(...args) {
+		super(...args);
+	}
+	static fromStatus(status, body) {
+		return new APIError$2(status, body);
+	}
+	static from(status, error$51) {
+		return new APIError$2(status, {
+			message: error$51.message,
+			code: error$51.code
+		});
+	}
+};
+var SLASH_CHAR_CODE = "/".charCodeAt(0);
+function isLoopbackForDevScheme(host) {
+	const hostname$2 = host.replace(/:\d+$/, "").replace(/^\[|\]$/g, "").toLowerCase();
+	return hostname$2 === "localhost" || hostname$2.endsWith(".localhost") || hostname$2 === "::1" || hostname$2.startsWith("127.");
+}
+function trimTrailingSlashes(value) {
+	let end = value.length;
+	while (end > 0 && value.charCodeAt(end - 1) === SLASH_CHAR_CODE) end--;
+	return end === value.length ? value : value.slice(0, end);
+}
+function checkHasPath(url$1) {
+	try {
+		return (trimTrailingSlashes(new URL(url$1).pathname) || "/") !== "/";
+	} catch {
+		throw new BetterAuthError(`Invalid base URL: ${url$1}. Please provide a valid base URL.`);
+	}
+}
+function assertHasProtocol(url$1) {
+	try {
+		const parsedUrl = new URL(url$1);
+		if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") throw new BetterAuthError(`Invalid base URL: ${url$1}. URL must include 'http://' or 'https://'`);
+	} catch (error$51) {
+		if (error$51 instanceof BetterAuthError) throw error$51;
+		throw new BetterAuthError(`Invalid base URL: ${url$1}. Please provide a valid base URL.`, { cause: error$51 });
+	}
+}
+function withPath(url$1, path$1 = "/api/auth") {
+	assertHasProtocol(url$1);
+	if (checkHasPath(url$1)) return url$1;
+	const trimmedUrl = trimTrailingSlashes(url$1);
+	if (!path$1 || path$1 === "/") return trimmedUrl;
+	path$1 = path$1.startsWith("/") ? path$1 : `/${path$1}`;
+	return `${trimmedUrl}${path$1}`;
+}
+function validateProxyHeader(header, type) {
+	if (!header || header.trim() === "") return false;
+	if (type === "proto") return header === "http" || header === "https";
+	if (type === "host") {
+		if ([
+			/\.\./,
+			/\0/,
+			/[\s]/,
+			/^[.]/,
+			/[<>'"]/,
+			/javascript:/i,
+			/file:/i,
+			/data:/i
+		].some((pattern) => pattern.test(header))) return false;
+		return /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*(:[0-9]{1,5})?$/.test(header) || /^(\d{1,3}\.){3}\d{1,3}(:[0-9]{1,5})?$/.test(header) || /^\[[0-9a-fA-F:]+\](:[0-9]{1,5})?$/.test(header) || /^localhost(:[0-9]{1,5})?$/i.test(header);
+	}
+	return false;
+}
+function getBaseURL(url$1, path$1, request, loadEnv, trustedProxyHeaders) {
+	if (url$1) return withPath(url$1, path$1);
+	if (loadEnv !== false) {
+		const fromEnv = env$1.BETTER_AUTH_URL || env$1.NEXT_PUBLIC_BETTER_AUTH_URL || env$1.PUBLIC_BETTER_AUTH_URL || env$1.NUXT_PUBLIC_BETTER_AUTH_URL || env$1.NUXT_PUBLIC_AUTH_URL || (env$1.BASE_URL !== "/" ? env$1.BASE_URL : void 0);
+		if (fromEnv) return withPath(fromEnv, path$1);
+	}
+	const fromRequest = request?.headers.get("x-forwarded-host");
+	const fromRequestProto = request?.headers.get("x-forwarded-proto");
+	if (fromRequest && fromRequestProto && trustedProxyHeaders) {
+		if (validateProxyHeader(fromRequestProto, "proto") && validateProxyHeader(fromRequest, "host")) try {
+			return withPath(`${fromRequestProto}://${fromRequest}`, path$1);
+		} catch (_error) {}
+	}
+	if (request) {
+		const url$2 = getOrigin(request.url);
+		if (!url$2) throw new BetterAuthError("Could not get origin from request. Please provide a valid base URL.");
+		return withPath(url$2, path$1);
+	}
+	if (typeof window !== "undefined" && window.location) return withPath(window.location.origin, path$1);
+}
+function getOrigin(url$1) {
+	try {
+		const parsedUrl = new URL(url$1);
+		return parsedUrl.origin === "null" ? null : parsedUrl.origin;
+	} catch {
+		return null;
+	}
+}
+function getProtocol(url$1) {
+	try {
+		return new URL(url$1).protocol;
+	} catch {
+		return null;
+	}
+}
+function getHost(url$1) {
+	try {
+		return new URL(url$1).host;
+	} catch {
+		return null;
+	}
+}
+function isDynamicBaseURLConfig(config$2) {
+	return typeof config$2 === "object" && config$2 !== null && "allowedHosts" in config$2 && Array.isArray(config$2.allowedHosts);
+}
+function isRequestLike(value) {
+	if (value instanceof Request) return true;
+	if (typeof value !== "object" || value === null || Object.prototype.toString.call(value) !== "[object Request]") return false;
+	const v = value;
+	return typeof v.url === "string" && typeof v.headers === "object" && v.headers !== null && typeof v.headers.get === "function";
+}
+function getHostFromSource(source, trustedProxyHeaders) {
+	const headers = isRequestLike(source) ? source.headers : source;
+	if (trustedProxyHeaders) {
+		const forwardedHost = headers.get("x-forwarded-host");
+		if (forwardedHost && validateProxyHeader(forwardedHost, "host")) return forwardedHost;
+	}
+	const host = headers.get("host");
+	if (host && validateProxyHeader(host, "host")) return host;
+	if (isRequestLike(source)) try {
+		return new URL(source.url).host;
+	} catch {
+		return null;
+	}
+	return null;
+}
+function getProtocolFromSource(source, configProtocol, trustedProxyHeaders) {
+	if (configProtocol === "http" || configProtocol === "https") return configProtocol;
+	const headers = isRequestLike(source) ? source.headers : source;
+	if (trustedProxyHeaders) {
+		const forwardedProto = headers.get("x-forwarded-proto");
+		if (forwardedProto && validateProxyHeader(forwardedProto, "proto")) return forwardedProto;
+	}
+	if (isRequestLike(source)) try {
+		const url$1 = new URL(source.url);
+		if (url$1.protocol === "http:" || url$1.protocol === "https:") return url$1.protocol.slice(0, -1);
+	} catch {}
+	const host = getHostFromSource(source, trustedProxyHeaders);
+	if (host && isLoopbackForDevScheme(host)) return "http";
+	return "https";
+}
+var matchesHostPattern = (host, pattern) => {
+	if (!host || !pattern) return false;
+	const normalizedHost = host.replace(/^https?:\/\//, "").split("/")[0].toLowerCase();
+	const normalizedPattern = pattern.replace(/^https?:\/\//, "").split("/")[0].toLowerCase();
+	if (normalizedPattern.includes("*") || normalizedPattern.includes("?")) return wildcardMatch(normalizedPattern)(normalizedHost);
+	return normalizedHost.toLowerCase() === normalizedPattern.toLowerCase();
+};
+function resolveDynamicBaseURL(config$2, source, basePath, trustedProxyHeaders) {
+	const host = getHostFromSource(source, trustedProxyHeaders);
+	if (!host) {
+		if (config$2.fallback) return withPath(config$2.fallback, basePath);
+		throw new BetterAuthError("Could not determine host from request headers. Please provide a fallback URL in your baseURL config.");
+	}
+	if (config$2.allowedHosts.some((pattern) => matchesHostPattern(host, pattern))) return withPath(`${getProtocolFromSource(source, config$2.protocol, trustedProxyHeaders)}://${host}`, basePath);
+	if (config$2.fallback) return withPath(config$2.fallback, basePath);
+	throw new BetterAuthError(`Host "${host}" is not in the allowed hosts list. Allowed hosts: ${config$2.allowedHosts.join(", ")}. Add this host to your allowedHosts config or provide a fallback URL.`);
+}
+function resolveBaseURL(config$2, basePath, source, loadEnv, trustedProxyHeaders) {
+	if (isDynamicBaseURLConfig(config$2)) {
+		if (source) return resolveDynamicBaseURL(config$2, source, basePath, trustedProxyHeaders);
+		if (config$2.fallback) return withPath(config$2.fallback, basePath);
+		return getBaseURL(void 0, basePath, void 0, loadEnv, trustedProxyHeaders);
+	}
+	const request = isRequestLike(source) ? source : void 0;
+	if (typeof config$2 === "string") return getBaseURL(config$2, basePath, request, loadEnv, trustedProxyHeaders);
+	return getBaseURL(void 0, basePath, request, loadEnv, trustedProxyHeaders);
+}
+function isPromise(obj) {
+	return !!obj && (typeof obj === "object" || typeof obj === "function") && typeof obj.then === "function";
+}
+function isBytes$1(a) {
+	return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array" && "BYTES_PER_ELEMENT" in a && a.BYTES_PER_ELEMENT === 1;
+}
+function anumber$1(n, title = "") {
+	if (typeof n !== "number") {
+		const prefix = title && `"${title}" `;
+		throw new TypeError(`${prefix}expected number, got ${typeof n}`);
+	}
+	if (!Number.isSafeInteger(n) || n < 0) {
+		const prefix = title && `"${title}" `;
+		throw new RangeError(`${prefix}expected integer >= 0, got ${n}`);
+	}
+}
+function abytes$1(value, length, title = "") {
+	const bytes = isBytes$1(value);
+	const len = value?.length;
+	const needsLen = length !== void 0;
+	if (!bytes || needsLen && len !== length) {
+		const prefix = title && `"${title}" `;
+		const ofLen = needsLen ? ` of length ${length}` : "";
+		const got = bytes ? `length=${len}` : `type=${typeof value}`;
+		const message$1 = prefix + "expected Uint8Array" + ofLen + ", got " + got;
+		if (!bytes) throw new TypeError(message$1);
+		throw new RangeError(message$1);
+	}
+	return value;
+}
+function ahash(h) {
+	if (typeof h !== "function" || typeof h.create !== "function") throw new TypeError("Hash must wrapped by utils.createHasher");
+	anumber$1(h.outputLen);
+	anumber$1(h.blockLen);
+	if (h.outputLen < 1) throw new Error("\"outputLen\" must be >= 1");
+	if (h.blockLen < 1) throw new Error("\"blockLen\" must be >= 1");
+}
+function aexists$1(instance, checkFinished = true) {
+	if (instance.destroyed) throw new Error("Hash instance has been destroyed");
+	if (checkFinished && instance.finished) throw new Error("Hash#digest() has already been called");
+}
+function aoutput$1(out, instance) {
+	abytes$1(out, void 0, "digestInto() output");
+	const min = instance.outputLen;
+	if (out.length < min) throw new RangeError("\"digestInto() output\" expected to be of length >=" + min);
+}
+function clean$1(...arrays) {
+	for (let i = 0; i < arrays.length; i++) arrays[i].fill(0);
+}
+function createView$1(arr) {
+	return new DataView(arr.buffer, arr.byteOffset, arr.byteLength);
+}
+function rotr(word, shift) {
+	return word << 32 - shift | word >>> shift;
+}
+function createHasher(hashCons, info$1 = {}) {
+	const hashC = (msg, opts) => hashCons(opts).update(msg).digest();
+	const tmp = hashCons(void 0);
+	hashC.outputLen = tmp.outputLen;
+	hashC.blockLen = tmp.blockLen;
+	hashC.canXOF = tmp.canXOF;
+	hashC.create = (opts) => hashCons(opts);
+	Object.assign(hashC, info$1);
+	return Object.freeze(hashC);
+}
+const oidNist = (suffix) => ({ oid: Uint8Array.from([
+	6,
+	9,
+	96,
+	134,
+	72,
+	1,
+	101,
+	3,
+	4,
+	2,
+	suffix
+]) });
+var _HMAC = class {
+	oHash;
+	iHash;
+	blockLen;
+	outputLen;
+	canXOF = false;
+	finished = false;
+	destroyed = false;
+	constructor(hash$1, key) {
+		ahash(hash$1);
+		abytes$1(key, void 0, "key");
+		this.iHash = hash$1.create();
+		if (typeof this.iHash.update !== "function") throw new Error("Expected instance of class which extends utils.Hash");
+		this.blockLen = this.iHash.blockLen;
+		this.outputLen = this.iHash.outputLen;
+		const blockLen = this.blockLen;
+		const pad = new Uint8Array(blockLen);
+		pad.set(key.length > blockLen ? hash$1.create().update(key).digest() : key);
+		for (let i = 0; i < pad.length; i++) pad[i] ^= 54;
+		this.iHash.update(pad);
+		this.oHash = hash$1.create();
+		for (let i = 0; i < pad.length; i++) pad[i] ^= 106;
+		this.oHash.update(pad);
+		clean$1(pad);
+	}
+	update(buf) {
+		aexists$1(this);
+		this.iHash.update(buf);
+		return this;
+	}
+	digestInto(out) {
+		aexists$1(this);
+		aoutput$1(out, this);
+		this.finished = true;
+		const buf = out.subarray(0, this.outputLen);
+		this.iHash.digestInto(buf);
+		this.oHash.update(buf);
+		this.oHash.digestInto(buf);
+		this.destroy();
+	}
+	digest() {
+		const out = new Uint8Array(this.oHash.outputLen);
+		this.digestInto(out);
+		return out;
+	}
+	_cloneInto(to) {
+		to ||= Object.create(Object.getPrototypeOf(this), {});
+		const { oHash, iHash, finished, destroyed, blockLen, outputLen } = this;
+		to = to;
+		to.finished = finished;
+		to.destroyed = destroyed;
+		to.blockLen = blockLen;
+		to.outputLen = outputLen;
+		to.oHash = oHash._cloneInto(to.oHash);
+		to.iHash = iHash._cloneInto(to.iHash);
+		return to;
+	}
+	clone() {
+		return this._cloneInto();
+	}
+	destroy() {
+		this.destroyed = true;
+		this.oHash.destroy();
+		this.iHash.destroy();
+	}
+};
+const hmac = /* @__PURE__ */ (() => {
+	const hmac_ = ((hash$1, key, message$1) => new _HMAC(hash$1, key).update(message$1).digest());
+	hmac_.create = (hash$1, key) => new _HMAC(hash$1, key);
+	return hmac_;
+})();
+function extract(hash$1, ikm, salt) {
+	ahash(hash$1);
+	if (salt === void 0) salt = new Uint8Array(hash$1.outputLen);
+	return hmac(hash$1, salt, ikm);
+}
+var HKDF_COUNTER = /* @__PURE__ */ Uint8Array.of(0);
+var EMPTY_BUFFER$4 = /* @__PURE__ */ Uint8Array.of();
+function expand(hash$1, prk, info$1, length = 32) {
+	ahash(hash$1);
+	anumber$1(length, "length");
+	abytes$1(prk, void 0, "prk");
+	const olen = hash$1.outputLen;
+	if (prk.length < olen) throw new Error("\"prk\" must be at least HashLen octets");
+	if (length > 255 * olen) throw new Error("Length must be <= 255*HashLen");
+	const blocks = Math.ceil(length / olen);
+	if (info$1 === void 0) info$1 = EMPTY_BUFFER$4;
+	else abytes$1(info$1, void 0, "info");
+	const okm = new Uint8Array(blocks * olen);
+	const HMAC = hmac.create(hash$1, prk);
+	const HMACTmp = HMAC._cloneInto();
+	const T = new Uint8Array(HMAC.outputLen);
+	for (let counter = 0; counter < blocks; counter++) {
+		HKDF_COUNTER[0] = counter + 1;
+		HMACTmp.update(counter === 0 ? EMPTY_BUFFER$4 : T).update(info$1).update(HKDF_COUNTER).digestInto(T);
+		okm.set(T, olen * counter);
+		HMAC._cloneInto(HMACTmp);
+	}
+	HMAC.destroy();
+	HMACTmp.destroy();
+	clean$1(T, HKDF_COUNTER);
+	return okm.slice(0, length);
+}
+const hkdf = (hash$1, ikm, salt, info$1, length) => expand(hash$1, extract(hash$1, ikm, salt), info$1, length);
+function Chi(a, b, c) {
+	return a & b ^ ~a & c;
+}
+function Maj(a, b, c) {
+	return a & b ^ a & c ^ b & c;
+}
+var HashMD = class {
+	blockLen;
+	outputLen;
+	canXOF = false;
+	padOffset;
+	isLE;
+	buffer;
+	view;
+	finished = false;
+	length = 0;
+	pos = 0;
+	destroyed = false;
+	constructor(blockLen, outputLen, padOffset, isLE$1) {
+		this.blockLen = blockLen;
+		this.outputLen = outputLen;
+		this.padOffset = padOffset;
+		this.isLE = isLE$1;
+		this.buffer = new Uint8Array(blockLen);
+		this.view = createView$1(this.buffer);
+	}
+	update(data) {
+		aexists$1(this);
+		abytes$1(data);
+		const { view, buffer, blockLen } = this;
+		const len = data.length;
+		for (let pos = 0; pos < len;) {
+			const take = Math.min(blockLen - this.pos, len - pos);
+			if (take === blockLen) {
+				const dataView = createView$1(data);
+				for (; blockLen <= len - pos; pos += blockLen) this.process(dataView, pos);
+				continue;
+			}
+			buffer.set(data.subarray(pos, pos + take), this.pos);
+			this.pos += take;
+			pos += take;
+			if (this.pos === blockLen) {
+				this.process(view, 0);
+				this.pos = 0;
+			}
+		}
+		this.length += data.length;
+		this.roundClean();
+		return this;
+	}
+	digestInto(out) {
+		aexists$1(this);
+		aoutput$1(out, this);
+		this.finished = true;
+		const { buffer, view, blockLen, isLE: isLE$1 } = this;
+		let { pos } = this;
+		buffer[pos++] = 128;
+		clean$1(this.buffer.subarray(pos));
+		if (this.padOffset > blockLen - pos) {
+			this.process(view, 0);
+			pos = 0;
+		}
+		for (let i = pos; i < blockLen; i++) buffer[i] = 0;
+		view.setBigUint64(blockLen - 8, BigInt(this.length * 8), isLE$1);
+		this.process(view, 0);
+		const oview = createView$1(out);
+		const len = this.outputLen;
+		if (len % 4) throw new Error("_sha2: outputLen must be aligned to 32bit");
+		const outLen = len / 4;
+		const state = this.get();
+		if (outLen > state.length) throw new Error("_sha2: outputLen bigger than state");
+		for (let i = 0; i < outLen; i++) oview.setUint32(4 * i, state[i], isLE$1);
+	}
+	digest() {
+		const { buffer, outputLen } = this;
+		this.digestInto(buffer);
+		const res = buffer.slice(0, outputLen);
+		this.destroy();
+		return res;
+	}
+	_cloneInto(to) {
+		to ||= new this.constructor();
+		to.set(...this.get());
+		const { blockLen, buffer, length, finished, destroyed, pos } = this;
+		to.destroyed = destroyed;
+		to.finished = finished;
+		to.length = length;
+		to.pos = pos;
+		if (length % blockLen) to.buffer.set(buffer);
+		return to;
+	}
+	clone() {
+		return this._cloneInto();
+	}
+};
+const SHA256_IV = /* @__PURE__ */ Uint32Array.from([
+	1779033703,
+	3144134277,
+	1013904242,
+	2773480762,
+	1359893119,
+	2600822924,
+	528734635,
+	1541459225
+]);
+var SHA256_K = /* @__PURE__ */ Uint32Array.from([
+	1116352408,
+	1899447441,
+	3049323471,
+	3921009573,
+	961987163,
+	1508970993,
+	2453635748,
+	2870763221,
+	3624381080,
+	310598401,
+	607225278,
+	1426881987,
+	1925078388,
+	2162078206,
+	2614888103,
+	3248222580,
+	3835390401,
+	4022224774,
+	264347078,
+	604807628,
+	770255983,
+	1249150122,
+	1555081692,
+	1996064986,
+	2554220882,
+	2821834349,
+	2952996808,
+	3210313671,
+	3336571891,
+	3584528711,
+	113926993,
+	338241895,
+	666307205,
+	773529912,
+	1294757372,
+	1396182291,
+	1695183700,
+	1986661051,
+	2177026350,
+	2456956037,
+	2730485921,
+	2820302411,
+	3259730800,
+	3345764771,
+	3516065817,
+	3600352804,
+	4094571909,
+	275423344,
+	430227734,
+	506948616,
+	659060556,
+	883997877,
+	958139571,
+	1322822218,
+	1537002063,
+	1747873779,
+	1955562222,
+	2024104815,
+	2227730452,
+	2361852424,
+	2428436474,
+	2756734187,
+	3204031479,
+	3329325298
+]);
+var SHA256_W = /* @__PURE__ */ new Uint32Array(64);
+var SHA2_32B = class extends HashMD {
+	constructor(outputLen) {
+		super(64, outputLen, 8, false);
+	}
+	get() {
+		const { A, B, C, D, E, F, G, H } = this;
+		return [
+			A,
+			B,
+			C,
+			D,
+			E,
+			F,
+			G,
+			H
+		];
+	}
+	set(A, B, C, D, E, F, G, H) {
+		this.A = A | 0;
+		this.B = B | 0;
+		this.C = C | 0;
+		this.D = D | 0;
+		this.E = E | 0;
+		this.F = F | 0;
+		this.G = G | 0;
+		this.H = H | 0;
+	}
+	process(view, offset) {
+		for (let i = 0; i < 16; i++, offset += 4) SHA256_W[i] = view.getUint32(offset, false);
+		for (let i = 16; i < 64; i++) {
+			const W15 = SHA256_W[i - 15];
+			const W2 = SHA256_W[i - 2];
+			const s0 = rotr(W15, 7) ^ rotr(W15, 18) ^ W15 >>> 3;
+			SHA256_W[i] = (rotr(W2, 17) ^ rotr(W2, 19) ^ W2 >>> 10) + SHA256_W[i - 7] + s0 + SHA256_W[i - 16] | 0;
+		}
+		let { A, B, C, D, E, F, G, H } = this;
+		for (let i = 0; i < 64; i++) {
+			const sigma1 = rotr(E, 6) ^ rotr(E, 11) ^ rotr(E, 25);
+			const T1 = H + sigma1 + Chi(E, F, G) + SHA256_K[i] + SHA256_W[i] | 0;
+			const T2 = (rotr(A, 2) ^ rotr(A, 13) ^ rotr(A, 22)) + Maj(A, B, C) | 0;
+			H = G;
+			G = F;
+			F = E;
+			E = D + T1 | 0;
+			D = C;
+			C = B;
+			B = A;
+			A = T1 + T2 | 0;
+		}
+		A = A + this.A | 0;
+		B = B + this.B | 0;
+		C = C + this.C | 0;
+		D = D + this.D | 0;
+		E = E + this.E | 0;
+		F = F + this.F | 0;
+		G = G + this.G | 0;
+		H = H + this.H | 0;
+		this.set(A, B, C, D, E, F, G, H);
+	}
+	roundClean() {
+		clean$1(SHA256_W);
+	}
+	destroy() {
+		this.destroyed = true;
+		this.set(0, 0, 0, 0, 0, 0, 0, 0);
+		clean$1(this.buffer);
+	}
+};
+var _SHA256 = class extends SHA2_32B {
+	A = SHA256_IV[0] | 0;
+	B = SHA256_IV[1] | 0;
+	C = SHA256_IV[2] | 0;
+	D = SHA256_IV[3] | 0;
+	E = SHA256_IV[4] | 0;
+	F = SHA256_IV[5] | 0;
+	G = SHA256_IV[6] | 0;
+	H = SHA256_IV[7] | 0;
+	constructor() {
+		super(32);
+	}
+};
+const sha256 = /* @__PURE__ */ createHasher(() => new _SHA256(), /* @__PURE__ */ oidNist(1));
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+var MAX_INT32 = 2 ** 32;
+function concat$2(...buffers) {
+	const size = buffers.reduce((acc, { length }) => acc + length, 0);
+	const buf = new Uint8Array(size);
+	let i = 0;
+	for (const buffer of buffers) {
+		buf.set(buffer, i);
+		i += buffer.length;
+	}
+	return buf;
+}
+function writeUInt32BE(buf, value, offset) {
+	if (value < 0 || value >= MAX_INT32) throw new RangeError(`value must be >= 0 and <= ${MAX_INT32 - 1}. Received ${value}`);
+	buf.set([
+		value >>> 24,
+		value >>> 16,
+		value >>> 8,
+		value & 255
+	], offset);
+}
+function uint64be(value) {
+	const high = Math.floor(value / MAX_INT32);
+	const low = value % MAX_INT32;
+	const buf = new Uint8Array(8);
+	writeUInt32BE(buf, high, 0);
+	writeUInt32BE(buf, low, 4);
+	return buf;
+}
+function uint32be(value) {
+	const buf = new Uint8Array(4);
+	writeUInt32BE(buf, value);
+	return buf;
+}
+function encode$4(string$4) {
+	const bytes = new Uint8Array(string$4.length);
+	for (let i = 0; i < string$4.length; i++) {
+		const code = string$4.charCodeAt(i);
+		if (code > 127) throw new TypeError("non-ASCII string encountered in encode()");
+		bytes[i] = code;
+	}
+	return bytes;
+}
+function encodeBase64(input) {
+	if (Uint8Array.prototype.toBase64) return input.toBase64();
+	const CHUNK_SIZE$1 = 32768;
+	const arr = [];
+	for (let i = 0; i < input.length; i += CHUNK_SIZE$1) arr.push(String.fromCharCode.apply(null, input.subarray(i, i + CHUNK_SIZE$1)));
+	return btoa(arr.join(""));
+}
+function decodeBase64(encoded) {
+	if (Uint8Array.fromBase64) return Uint8Array.fromBase64(encoded);
+	const binary$1 = atob(encoded);
+	const bytes = new Uint8Array(binary$1.length);
+	for (let i = 0; i < binary$1.length; i++) bytes[i] = binary$1.charCodeAt(i);
+	return bytes;
+}
+function decode$3(input) {
+	if (Uint8Array.fromBase64) return Uint8Array.fromBase64(typeof input === "string" ? input : decoder.decode(input), { alphabet: "base64url" });
+	let encoded = input;
+	if (encoded instanceof Uint8Array) encoded = decoder.decode(encoded);
+	encoded = encoded.replace(/-/g, "+").replace(/_/g, "/");
+	try {
+		return decodeBase64(encoded);
+	} catch {
+		throw new TypeError("The input to be decoded is not correctly encoded.");
+	}
+}
+function encode$3(input) {
+	let unencoded = input;
+	if (typeof unencoded === "string") unencoded = encoder.encode(unencoded);
+	if (Uint8Array.prototype.toBase64) return unencoded.toBase64({
+		alphabet: "base64url",
+		omitPadding: true
+	});
+	return encodeBase64(unencoded).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+}
+var unusable = (name, prop = "algorithm.name") => /* @__PURE__ */ new TypeError(`CryptoKey does not support this operation, its ${prop} must be ${name}`);
+var isAlgorithm = (algorithm$1, name) => algorithm$1.name === name;
+function getHashLength(hash$1) {
+	return parseInt(hash$1.name.slice(4), 10);
+}
+function checkHashLength(algorithm$1, expected) {
+	if (getHashLength(algorithm$1.hash) !== expected) throw unusable(`SHA-${expected}`, "algorithm.hash");
+}
+function getNamedCurve(alg$1) {
+	switch (alg$1) {
+		case "ES256": return "P-256";
+		case "ES384": return "P-384";
+		case "ES512": return "P-521";
+		default: throw new Error("unreachable");
+	}
+}
+function checkUsage(key, usage) {
+	if (usage && !key.usages.includes(usage)) throw new TypeError(`CryptoKey does not support this operation, its usages must include ${usage}.`);
+}
+function checkSigCryptoKey(key, alg$1, usage) {
+	switch (alg$1) {
+		case "HS256":
+		case "HS384":
+		case "HS512":
+			if (!isAlgorithm(key.algorithm, "HMAC")) throw unusable("HMAC");
+			checkHashLength(key.algorithm, parseInt(alg$1.slice(2), 10));
+			break;
+		case "RS256":
+		case "RS384":
+		case "RS512":
+			if (!isAlgorithm(key.algorithm, "RSASSA-PKCS1-v1_5")) throw unusable("RSASSA-PKCS1-v1_5");
+			checkHashLength(key.algorithm, parseInt(alg$1.slice(2), 10));
+			break;
+		case "PS256":
+		case "PS384":
+		case "PS512":
+			if (!isAlgorithm(key.algorithm, "RSA-PSS")) throw unusable("RSA-PSS");
+			checkHashLength(key.algorithm, parseInt(alg$1.slice(2), 10));
+			break;
+		case "Ed25519":
+		case "EdDSA":
+			if (!isAlgorithm(key.algorithm, "Ed25519")) throw unusable("Ed25519");
+			break;
+		case "ML-DSA-44":
+		case "ML-DSA-65":
+		case "ML-DSA-87":
+			if (!isAlgorithm(key.algorithm, alg$1)) throw unusable(alg$1);
+			break;
+		case "ES256":
+		case "ES384":
+		case "ES512": {
+			if (!isAlgorithm(key.algorithm, "ECDSA")) throw unusable("ECDSA");
+			const expected = getNamedCurve(alg$1);
+			if (key.algorithm.namedCurve !== expected) throw unusable(expected, "algorithm.namedCurve");
+			break;
+		}
+		default: throw new TypeError("CryptoKey does not support this operation");
+	}
+	checkUsage(key, usage);
+}
+function checkEncCryptoKey(key, alg$1, usage) {
+	switch (alg$1) {
+		case "A128GCM":
+		case "A192GCM":
+		case "A256GCM": {
+			if (!isAlgorithm(key.algorithm, "AES-GCM")) throw unusable("AES-GCM");
+			const expected = parseInt(alg$1.slice(1, 4), 10);
+			if (key.algorithm.length !== expected) throw unusable(expected, "algorithm.length");
+			break;
+		}
+		case "A128KW":
+		case "A192KW":
+		case "A256KW": {
+			if (!isAlgorithm(key.algorithm, "AES-KW")) throw unusable("AES-KW");
+			const expected = parseInt(alg$1.slice(1, 4), 10);
+			if (key.algorithm.length !== expected) throw unusable(expected, "algorithm.length");
+			break;
+		}
+		case "ECDH":
+			switch (key.algorithm.name) {
+				case "ECDH":
+				case "X25519": break;
+				default: throw unusable("ECDH or X25519");
+			}
+			break;
+		case "PBES2-HS256+A128KW":
+		case "PBES2-HS384+A192KW":
+		case "PBES2-HS512+A256KW":
+			if (!isAlgorithm(key.algorithm, "PBKDF2")) throw unusable("PBKDF2");
+			break;
+		case "RSA-OAEP":
+		case "RSA-OAEP-256":
+		case "RSA-OAEP-384":
+		case "RSA-OAEP-512":
+			if (!isAlgorithm(key.algorithm, "RSA-OAEP")) throw unusable("RSA-OAEP");
+			checkHashLength(key.algorithm, parseInt(alg$1.slice(9), 10) || 1);
+			break;
+		default: throw new TypeError("CryptoKey does not support this operation");
+	}
+	checkUsage(key, usage);
+}
+function message(msg, actual, ...types) {
+	types = types.filter(Boolean);
+	if (types.length > 2) {
+		const last = types.pop();
+		msg += `one of type ${types.join(", ")}, or ${last}.`;
+	} else if (types.length === 2) msg += `one of type ${types[0]} or ${types[1]}.`;
+	else msg += `of type ${types[0]}.`;
+	if (actual == null) msg += ` Received ${actual}`;
+	else if (typeof actual === "function" && actual.name) msg += ` Received function ${actual.name}`;
+	else if (typeof actual === "object" && actual != null) {
+		if (actual.constructor?.name) msg += ` Received an instance of ${actual.constructor.name}`;
+	}
+	return msg;
+}
+const invalidKeyInput = (actual, ...types) => message("Key must be ", actual, ...types);
+const withAlg = (alg$1, actual, ...types) => message(`Key for the ${alg$1} algorithm must be `, actual, ...types);
+var JOSEError = class extends Error {
+	static code = "ERR_JOSE_GENERIC";
+	code = "ERR_JOSE_GENERIC";
+	constructor(message$1, options) {
+		super(message$1, options);
+		this.name = this.constructor.name;
+		Error.captureStackTrace?.(this, this.constructor);
+	}
+};
+var JWTClaimValidationFailed = class extends JOSEError {
+	static code = "ERR_JWT_CLAIM_VALIDATION_FAILED";
+	code = "ERR_JWT_CLAIM_VALIDATION_FAILED";
+	claim;
+	reason;
+	payload;
+	constructor(message$1, payload, claim = "unspecified", reason = "unspecified") {
+		super(message$1, { cause: {
+			claim,
+			reason,
+			payload
+		} });
+		this.claim = claim;
+		this.reason = reason;
+		this.payload = payload;
+	}
+};
+var JWTExpired = class extends JOSEError {
+	static code = "ERR_JWT_EXPIRED";
+	code = "ERR_JWT_EXPIRED";
+	claim;
+	reason;
+	payload;
+	constructor(message$1, payload, claim = "unspecified", reason = "unspecified") {
+		super(message$1, { cause: {
+			claim,
+			reason,
+			payload
+		} });
+		this.claim = claim;
+		this.reason = reason;
+		this.payload = payload;
+	}
+};
+var JOSEAlgNotAllowed = class extends JOSEError {
+	static code = "ERR_JOSE_ALG_NOT_ALLOWED";
+	code = "ERR_JOSE_ALG_NOT_ALLOWED";
+};
+var JOSENotSupported = class extends JOSEError {
+	static code = "ERR_JOSE_NOT_SUPPORTED";
+	code = "ERR_JOSE_NOT_SUPPORTED";
+};
+var JWEDecryptionFailed = class extends JOSEError {
+	static code = "ERR_JWE_DECRYPTION_FAILED";
+	code = "ERR_JWE_DECRYPTION_FAILED";
+	constructor(message$1 = "decryption operation failed", options) {
+		super(message$1, options);
+	}
+};
+var JWEInvalid = class extends JOSEError {
+	static code = "ERR_JWE_INVALID";
+	code = "ERR_JWE_INVALID";
+};
+var JWSInvalid = class extends JOSEError {
+	static code = "ERR_JWS_INVALID";
+	code = "ERR_JWS_INVALID";
+};
+var JWTInvalid = class extends JOSEError {
+	static code = "ERR_JWT_INVALID";
+	code = "ERR_JWT_INVALID";
+};
+var JWKInvalid = class extends JOSEError {
+	static code = "ERR_JWK_INVALID";
+	code = "ERR_JWK_INVALID";
+};
+var JWKSInvalid = class extends JOSEError {
+	static code = "ERR_JWKS_INVALID";
+	code = "ERR_JWKS_INVALID";
+};
+var JWKSNoMatchingKey = class extends JOSEError {
+	static code = "ERR_JWKS_NO_MATCHING_KEY";
+	code = "ERR_JWKS_NO_MATCHING_KEY";
+	constructor(message$1 = "no applicable key found in the JSON Web Key Set", options) {
+		super(message$1, options);
+	}
+};
+var JWKSMultipleMatchingKeys = class extends JOSEError {
+	[Symbol.asyncIterator];
+	static code = "ERR_JWKS_MULTIPLE_MATCHING_KEYS";
+	code = "ERR_JWKS_MULTIPLE_MATCHING_KEYS";
+	constructor(message$1 = "multiple matching keys found in the JSON Web Key Set", options) {
+		super(message$1, options);
+	}
+};
+var JWKSTimeout = class extends JOSEError {
+	static code = "ERR_JWKS_TIMEOUT";
+	code = "ERR_JWKS_TIMEOUT";
+	constructor(message$1 = "request timed out", options) {
+		super(message$1, options);
+	}
+};
+var JWSSignatureVerificationFailed = class extends JOSEError {
+	static code = "ERR_JWS_SIGNATURE_VERIFICATION_FAILED";
+	code = "ERR_JWS_SIGNATURE_VERIFICATION_FAILED";
+	constructor(message$1 = "signature verification failed", options) {
+		super(message$1, options);
+	}
+};
+function assertCryptoKey(key) {
+	if (!isCryptoKey(key)) throw new Error("CryptoKey instance expected");
+}
+const isCryptoKey = (key) => {
+	if (key?.[Symbol.toStringTag] === "CryptoKey") return true;
+	try {
+		return key instanceof CryptoKey;
+	} catch {
+		return false;
+	}
+};
+const isKeyObject = (key) => key?.[Symbol.toStringTag] === "KeyObject";
+const isKeyLike = (key) => isCryptoKey(key) || isKeyObject(key);
+function cekLength(alg$1) {
+	switch (alg$1) {
+		case "A128GCM": return 128;
+		case "A192GCM": return 192;
+		case "A256GCM":
+		case "A128CBC-HS256": return 256;
+		case "A192CBC-HS384": return 384;
+		case "A256CBC-HS512": return 512;
+		default: throw new JOSENotSupported(`Unsupported JWE Algorithm: ${alg$1}`);
+	}
+}
+const generateCek = (alg$1) => crypto.getRandomValues(new Uint8Array(cekLength(alg$1) >> 3));
+function checkCekLength(cek, expected) {
+	const actual = cek.byteLength << 3;
+	if (actual !== expected) throw new JWEInvalid(`Invalid Content Encryption Key length. Expected ${expected} bits, got ${actual} bits`);
+}
+function ivBitLength(alg$1) {
+	switch (alg$1) {
+		case "A128GCM":
+		case "A128GCMKW":
+		case "A192GCM":
+		case "A192GCMKW":
+		case "A256GCM":
+		case "A256GCMKW": return 96;
+		case "A128CBC-HS256":
+		case "A192CBC-HS384":
+		case "A256CBC-HS512": return 128;
+		default: throw new JOSENotSupported(`Unsupported JWE Algorithm: ${alg$1}`);
+	}
+}
+const generateIv = (alg$1) => crypto.getRandomValues(new Uint8Array(ivBitLength(alg$1) >> 3));
+function checkIvLength(enc$1, iv) {
+	if (iv.length << 3 !== ivBitLength(enc$1)) throw new JWEInvalid("Invalid Initialization Vector length");
+}
+async function cbcKeySetup(enc$1, cek, usage) {
+	if (!(cek instanceof Uint8Array)) throw new TypeError(invalidKeyInput(cek, "Uint8Array"));
+	const keySize = parseInt(enc$1.slice(1, 4), 10);
+	return {
+		encKey: await crypto.subtle.importKey("raw", cek.subarray(keySize >> 3), "AES-CBC", false, [usage]),
+		macKey: await crypto.subtle.importKey("raw", cek.subarray(0, keySize >> 3), {
+			hash: `SHA-${keySize << 1}`,
+			name: "HMAC"
+		}, false, ["sign"]),
+		keySize
+	};
+}
+async function cbcHmacTag(macKey, macData, keySize) {
+	return new Uint8Array((await crypto.subtle.sign("HMAC", macKey, macData)).slice(0, keySize >> 3));
+}
+async function cbcEncrypt(enc$1, plaintext, cek, iv, aad) {
+	const { encKey, macKey, keySize } = await cbcKeySetup(enc$1, cek, "encrypt");
+	const ciphertext = new Uint8Array(await crypto.subtle.encrypt({
+		iv,
+		name: "AES-CBC"
+	}, encKey, plaintext));
+	return {
+		ciphertext,
+		tag: await cbcHmacTag(macKey, concat$2(aad, iv, ciphertext, uint64be(aad.length << 3)), keySize),
+		iv
+	};
+}
+async function timingSafeEqual$1(a, b) {
+	if (!(a instanceof Uint8Array)) throw new TypeError("First argument must be a buffer");
+	if (!(b instanceof Uint8Array)) throw new TypeError("Second argument must be a buffer");
+	const algorithm$1 = {
+		name: "HMAC",
+		hash: "SHA-256"
+	};
+	const key = await crypto.subtle.generateKey(algorithm$1, false, ["sign"]);
+	const aHmac = new Uint8Array(await crypto.subtle.sign(algorithm$1, key, a));
+	const bHmac = new Uint8Array(await crypto.subtle.sign(algorithm$1, key, b));
+	let out = 0;
+	let i = -1;
+	while (++i < 32) out |= aHmac[i] ^ bHmac[i];
+	return out === 0;
+}
+async function cbcDecrypt(enc$1, cek, ciphertext, iv, tag$1, aad) {
+	const { encKey, macKey, keySize } = await cbcKeySetup(enc$1, cek, "decrypt");
+	const expectedTag = await cbcHmacTag(macKey, concat$2(aad, iv, ciphertext, uint64be(aad.length << 3)), keySize);
+	let macCheckPassed;
+	try {
+		macCheckPassed = await timingSafeEqual$1(tag$1, expectedTag);
+	} catch {}
+	if (!macCheckPassed) throw new JWEDecryptionFailed();
+	let plaintext;
+	try {
+		plaintext = new Uint8Array(await crypto.subtle.decrypt({
+			iv,
+			name: "AES-CBC"
+		}, encKey, ciphertext));
+	} catch {}
+	if (!plaintext) throw new JWEDecryptionFailed();
+	return plaintext;
+}
+async function gcmEncrypt(enc$1, plaintext, cek, iv, aad) {
+	let encKey;
+	if (cek instanceof Uint8Array) encKey = await crypto.subtle.importKey("raw", cek, "AES-GCM", false, ["encrypt"]);
+	else {
+		checkEncCryptoKey(cek, enc$1, "encrypt");
+		encKey = cek;
+	}
+	const encrypted = new Uint8Array(await crypto.subtle.encrypt({
+		additionalData: aad,
+		iv,
+		name: "AES-GCM",
+		tagLength: 128
+	}, encKey, plaintext));
+	const tag$1 = encrypted.slice(-16);
+	return {
+		ciphertext: encrypted.slice(0, -16),
+		tag: tag$1,
+		iv
+	};
+}
+async function gcmDecrypt(enc$1, cek, ciphertext, iv, tag$1, aad) {
+	let encKey;
+	if (cek instanceof Uint8Array) encKey = await crypto.subtle.importKey("raw", cek, "AES-GCM", false, ["decrypt"]);
+	else {
+		checkEncCryptoKey(cek, enc$1, "decrypt");
+		encKey = cek;
+	}
+	try {
+		return new Uint8Array(await crypto.subtle.decrypt({
+			additionalData: aad,
+			iv,
+			name: "AES-GCM",
+			tagLength: 128
+		}, encKey, concat$2(ciphertext, tag$1)));
+	} catch {
+		throw new JWEDecryptionFailed();
+	}
+}
+var unsupportedEnc = "Unsupported JWE Content Encryption Algorithm";
+async function encrypt(enc$1, plaintext, cek, iv, aad) {
+	if (!isCryptoKey(cek) && !(cek instanceof Uint8Array)) throw new TypeError(invalidKeyInput(cek, "CryptoKey", "KeyObject", "Uint8Array", "JSON Web Key"));
+	if (iv) checkIvLength(enc$1, iv);
+	else iv = generateIv(enc$1);
+	switch (enc$1) {
+		case "A128CBC-HS256":
+		case "A192CBC-HS384":
+		case "A256CBC-HS512":
+			if (cek instanceof Uint8Array) checkCekLength(cek, parseInt(enc$1.slice(-3), 10));
+			return cbcEncrypt(enc$1, plaintext, cek, iv, aad);
+		case "A128GCM":
+		case "A192GCM":
+		case "A256GCM":
+			if (cek instanceof Uint8Array) checkCekLength(cek, parseInt(enc$1.slice(1, 4), 10));
+			return gcmEncrypt(enc$1, plaintext, cek, iv, aad);
+		default: throw new JOSENotSupported(unsupportedEnc);
+	}
+}
+async function decrypt(enc$1, cek, ciphertext, iv, tag$1, aad) {
+	if (!isCryptoKey(cek) && !(cek instanceof Uint8Array)) throw new TypeError(invalidKeyInput(cek, "CryptoKey", "KeyObject", "Uint8Array", "JSON Web Key"));
+	if (!iv) throw new JWEInvalid("JWE Initialization Vector missing");
+	if (!tag$1) throw new JWEInvalid("JWE Authentication Tag missing");
+	checkIvLength(enc$1, iv);
+	switch (enc$1) {
+		case "A128CBC-HS256":
+		case "A192CBC-HS384":
+		case "A256CBC-HS512":
+			if (cek instanceof Uint8Array) checkCekLength(cek, parseInt(enc$1.slice(-3), 10));
+			return cbcDecrypt(enc$1, cek, ciphertext, iv, tag$1, aad);
+		case "A128GCM":
+		case "A192GCM":
+		case "A256GCM":
+			if (cek instanceof Uint8Array) checkCekLength(cek, parseInt(enc$1.slice(1, 4), 10));
+			return gcmDecrypt(enc$1, cek, ciphertext, iv, tag$1, aad);
+		default: throw new JOSENotSupported(unsupportedEnc);
+	}
+}
+const unprotected = Symbol();
+function assertNotSet(value, name) {
+	if (value) throw new TypeError(`${name} can only be called once`);
+}
+function decodeBase64url(value, label, ErrorClass) {
+	try {
+		return decode$3(value);
+	} catch {
+		throw new ErrorClass(`Failed to base64url decode the ${label}`);
+	}
+}
+async function digest(algorithm$1, data) {
+	const subtleDigest = `SHA-${algorithm$1.slice(-3)}`;
+	return new Uint8Array(await crypto.subtle.digest(subtleDigest, data));
+}
+var isObjectLike = (value) => typeof value === "object" && value !== null;
+function isObject$1(input) {
+	if (!isObjectLike(input) || Object.prototype.toString.call(input) !== "[object Object]") return false;
+	if (Object.getPrototypeOf(input) === null) return true;
+	let proto = input;
+	while (Object.getPrototypeOf(proto) !== null) proto = Object.getPrototypeOf(proto);
+	return Object.getPrototypeOf(input) === proto;
+}
+function isDisjoint(...headers) {
+	const sources = headers.filter(Boolean);
+	if (sources.length === 0 || sources.length === 1) return true;
+	let acc;
+	for (const header of sources) {
+		const parameters = Object.keys(header);
+		if (!acc || acc.size === 0) {
+			acc = new Set(parameters);
+			continue;
+		}
+		for (const parameter of parameters) {
+			if (acc.has(parameter)) return false;
+			acc.add(parameter);
+		}
+	}
+	return true;
+}
+const isJWK = (key) => isObject$1(key) && typeof key.kty === "string";
+const isPrivateJWK = (key) => key.kty !== "oct" && (key.kty === "AKP" && typeof key.priv === "string" || typeof key.d === "string");
+const isPublicJWK = (key) => key.kty !== "oct" && key.d === void 0 && key.priv === void 0;
+const isSecretJWK = (key) => key.kty === "oct" && typeof key.k === "string";
+function checkKeySize(key, alg$1) {
+	if (key.algorithm.length !== parseInt(alg$1.slice(1, 4), 10)) throw new TypeError(`Invalid key size for alg: ${alg$1}`);
+}
+function getCryptoKey$2(key, alg$1, usage) {
+	if (key instanceof Uint8Array) return crypto.subtle.importKey("raw", key, "AES-KW", true, [usage]);
+	checkEncCryptoKey(key, alg$1, usage);
+	return key;
+}
+async function wrap$2(alg$1, key, cek) {
+	const cryptoKey = await getCryptoKey$2(key, alg$1, "wrapKey");
+	checkKeySize(cryptoKey, alg$1);
+	const cryptoKeyCek = await crypto.subtle.importKey("raw", cek, {
+		hash: "SHA-256",
+		name: "HMAC"
+	}, true, ["sign"]);
+	return new Uint8Array(await crypto.subtle.wrapKey("raw", cryptoKeyCek, cryptoKey, "AES-KW"));
+}
+async function unwrap$2(alg$1, key, encryptedKey) {
+	const cryptoKey = await getCryptoKey$2(key, alg$1, "unwrapKey");
+	checkKeySize(cryptoKey, alg$1);
+	const cryptoKeyCek = await crypto.subtle.unwrapKey("raw", encryptedKey, cryptoKey, "AES-KW", {
+		hash: "SHA-256",
+		name: "HMAC"
+	}, true, ["sign"]);
+	return new Uint8Array(await crypto.subtle.exportKey("raw", cryptoKeyCek));
+}
+function lengthAndInput(input) {
+	return concat$2(uint32be(input.length), input);
+}
+async function concatKdf(Z, L, OtherInfo) {
+	const dkLen = L >> 3;
+	const hashLen = 32;
+	const reps = Math.ceil(dkLen / hashLen);
+	const dk = new Uint8Array(reps * hashLen);
+	for (let i = 1; i <= reps; i++) {
+		const hashInput = new Uint8Array(4 + Z.length + OtherInfo.length);
+		hashInput.set(uint32be(i), 0);
+		hashInput.set(Z, 4);
+		hashInput.set(OtherInfo, 4 + Z.length);
+		const hashResult = await digest("sha256", hashInput);
+		dk.set(hashResult, (i - 1) * hashLen);
+	}
+	return dk.slice(0, dkLen);
+}
+async function deriveKey$1(publicKey, privateKey, algorithm$1, keyLength, apu = new Uint8Array(), apv = new Uint8Array()) {
+	checkEncCryptoKey(publicKey, "ECDH");
+	checkEncCryptoKey(privateKey, "ECDH", "deriveBits");
+	const otherInfo = concat$2(lengthAndInput(encode$4(algorithm$1)), lengthAndInput(apu), lengthAndInput(apv), uint32be(keyLength), new Uint8Array());
+	return concatKdf(new Uint8Array(await crypto.subtle.deriveBits({
+		name: publicKey.algorithm.name,
+		public: publicKey
+	}, privateKey, getEcdhBitLength(publicKey))), keyLength, otherInfo);
+}
+function getEcdhBitLength(publicKey) {
+	if (publicKey.algorithm.name === "X25519") return 256;
+	return Math.ceil(parseInt(publicKey.algorithm.namedCurve.slice(-3), 10) / 8) << 3;
+}
+function allowed(key) {
+	switch (key.algorithm.namedCurve) {
+		case "P-256":
+		case "P-384":
+		case "P-521": return true;
+		default: return key.algorithm.name === "X25519";
+	}
+}
+function getCryptoKey$1(key, alg$1) {
+	if (key instanceof Uint8Array) return crypto.subtle.importKey("raw", key, "PBKDF2", false, ["deriveBits"]);
+	checkEncCryptoKey(key, alg$1, "deriveBits");
+	return key;
+}
+var concatSalt = (alg$1, p2sInput) => concat$2(encode$4(alg$1), Uint8Array.of(0), p2sInput);
+async function deriveKey(p2s, alg$1, p2c, key) {
+	if (!(p2s instanceof Uint8Array) || p2s.length < 8) throw new JWEInvalid("PBES2 Salt Input must be 8 or more octets");
+	if (!Number.isSafeInteger(p2c) || Math.sign(p2c) !== 1) throw new JWEInvalid("PBES2 Count Input must be a positive integer");
+	const salt = concatSalt(alg$1, p2s);
+	const keylen = parseInt(alg$1.slice(13, 16), 10);
+	const subtleAlg = {
+		hash: `SHA-${alg$1.slice(8, 11)}`,
+		iterations: p2c,
+		name: "PBKDF2",
+		salt
+	};
+	const cryptoKey = await getCryptoKey$1(key, alg$1);
+	return new Uint8Array(await crypto.subtle.deriveBits(subtleAlg, cryptoKey, keylen));
+}
+async function wrap$1(alg$1, key, cek, p2c = 2048, p2s = crypto.getRandomValues(new Uint8Array(16))) {
+	const derived = await deriveKey(p2s, alg$1, p2c, key);
+	return {
+		encryptedKey: await wrap$2(alg$1.slice(-6), derived, cek),
+		p2c,
+		p2s: encode$3(p2s)
+	};
+}
+async function unwrap$1(alg$1, key, encryptedKey, p2c, p2s) {
+	const derived = await deriveKey(p2s, alg$1, p2c, key);
+	return unwrap$2(alg$1.slice(-6), derived, encryptedKey);
+}
+function checkKeyLength(alg$1, key) {
+	if (alg$1.startsWith("RS") || alg$1.startsWith("PS")) {
+		const { modulusLength } = key.algorithm;
+		if (typeof modulusLength !== "number" || modulusLength < 2048) throw new TypeError(`${alg$1} requires key modulusLength to be 2048 bits or larger`);
+	}
+}
+function subtleAlgorithm$1(alg$1, algorithm$1) {
+	const hash$1 = `SHA-${alg$1.slice(-3)}`;
+	switch (alg$1) {
+		case "HS256":
+		case "HS384":
+		case "HS512": return {
+			hash: hash$1,
+			name: "HMAC"
+		};
+		case "PS256":
+		case "PS384":
+		case "PS512": return {
+			hash: hash$1,
+			name: "RSA-PSS",
+			saltLength: parseInt(alg$1.slice(-3), 10) >> 3
+		};
+		case "RS256":
+		case "RS384":
+		case "RS512": return {
+			hash: hash$1,
+			name: "RSASSA-PKCS1-v1_5"
+		};
+		case "ES256":
+		case "ES384":
+		case "ES512": return {
+			hash: hash$1,
+			name: "ECDSA",
+			namedCurve: algorithm$1.namedCurve
+		};
+		case "Ed25519":
+		case "EdDSA": return { name: "Ed25519" };
+		case "ML-DSA-44":
+		case "ML-DSA-65":
+		case "ML-DSA-87": return { name: alg$1 };
+		default: throw new JOSENotSupported(`alg ${alg$1} is not supported either by JOSE or your javascript runtime`);
+	}
+}
+async function getSigKey(alg$1, key, usage) {
+	if (key instanceof Uint8Array) {
+		if (!alg$1.startsWith("HS")) throw new TypeError(invalidKeyInput(key, "CryptoKey", "KeyObject", "JSON Web Key"));
+		return crypto.subtle.importKey("raw", key, {
+			hash: `SHA-${alg$1.slice(-3)}`,
+			name: "HMAC"
+		}, false, [usage]);
+	}
+	checkSigCryptoKey(key, alg$1, usage);
+	return key;
+}
+async function sign(alg$1, key, data) {
+	const cryptoKey = await getSigKey(alg$1, key, "sign");
+	checkKeyLength(alg$1, cryptoKey);
+	const signature = await crypto.subtle.sign(subtleAlgorithm$1(alg$1, cryptoKey.algorithm), cryptoKey, data);
+	return new Uint8Array(signature);
+}
+async function verify(alg$1, key, signature, data) {
+	const cryptoKey = await getSigKey(alg$1, key, "verify");
+	checkKeyLength(alg$1, cryptoKey);
+	const algorithm$1 = subtleAlgorithm$1(alg$1, cryptoKey.algorithm);
+	try {
+		return await crypto.subtle.verify(algorithm$1, cryptoKey, signature, data);
+	} catch {
+		return false;
+	}
+}
+var subtleAlgorithm = (alg$1) => {
+	switch (alg$1) {
+		case "RSA-OAEP":
+		case "RSA-OAEP-256":
+		case "RSA-OAEP-384":
+		case "RSA-OAEP-512": return "RSA-OAEP";
+		default: throw new JOSENotSupported(`alg ${alg$1} is not supported either by JOSE or your javascript runtime`);
+	}
+};
+async function encrypt$1(alg$1, key, cek) {
+	checkEncCryptoKey(key, alg$1, "encrypt");
+	checkKeyLength(alg$1, key);
+	return new Uint8Array(await crypto.subtle.encrypt(subtleAlgorithm(alg$1), key, cek));
+}
+async function decrypt$1(alg$1, key, encryptedKey) {
+	checkEncCryptoKey(key, alg$1, "decrypt");
+	checkKeyLength(alg$1, key);
+	return new Uint8Array(await crypto.subtle.decrypt(subtleAlgorithm(alg$1), key, encryptedKey));
+}
+var unsupportedAlg = "Invalid or unsupported JWK \"alg\" (Algorithm) Parameter value";
+function subtleMapping(jwk) {
+	let algorithm$1;
+	let keyUsages;
+	switch (jwk.kty) {
+		case "AKP":
+			switch (jwk.alg) {
+				case "ML-DSA-44":
+				case "ML-DSA-65":
+				case "ML-DSA-87":
+					algorithm$1 = { name: jwk.alg };
+					keyUsages = jwk.priv ? ["sign"] : ["verify"];
+					break;
+				default: throw new JOSENotSupported(unsupportedAlg);
+			}
+			break;
+		case "RSA":
+			switch (jwk.alg) {
+				case "PS256":
+				case "PS384":
+				case "PS512":
+					algorithm$1 = {
+						name: "RSA-PSS",
+						hash: `SHA-${jwk.alg.slice(-3)}`
+					};
+					keyUsages = jwk.d ? ["sign"] : ["verify"];
+					break;
+				case "RS256":
+				case "RS384":
+				case "RS512":
+					algorithm$1 = {
+						name: "RSASSA-PKCS1-v1_5",
+						hash: `SHA-${jwk.alg.slice(-3)}`
+					};
+					keyUsages = jwk.d ? ["sign"] : ["verify"];
+					break;
+				case "RSA-OAEP":
+				case "RSA-OAEP-256":
+				case "RSA-OAEP-384":
+				case "RSA-OAEP-512":
+					algorithm$1 = {
+						name: "RSA-OAEP",
+						hash: `SHA-${parseInt(jwk.alg.slice(-3), 10) || 1}`
+					};
+					keyUsages = jwk.d ? ["decrypt", "unwrapKey"] : ["encrypt", "wrapKey"];
+					break;
+				default: throw new JOSENotSupported(unsupportedAlg);
+			}
+			break;
+		case "EC":
+			switch (jwk.alg) {
+				case "ES256":
+				case "ES384":
+				case "ES512":
+					algorithm$1 = {
+						name: "ECDSA",
+						namedCurve: {
+							ES256: "P-256",
+							ES384: "P-384",
+							ES512: "P-521"
+						}[jwk.alg]
+					};
+					keyUsages = jwk.d ? ["sign"] : ["verify"];
+					break;
+				case "ECDH-ES":
+				case "ECDH-ES+A128KW":
+				case "ECDH-ES+A192KW":
+				case "ECDH-ES+A256KW":
+					algorithm$1 = {
+						name: "ECDH",
+						namedCurve: jwk.crv
+					};
+					keyUsages = jwk.d ? ["deriveBits"] : [];
+					break;
+				default: throw new JOSENotSupported(unsupportedAlg);
+			}
+			break;
+		case "OKP":
+			switch (jwk.alg) {
+				case "Ed25519":
+				case "EdDSA":
+					algorithm$1 = { name: "Ed25519" };
+					keyUsages = jwk.d ? ["sign"] : ["verify"];
+					break;
+				case "ECDH-ES":
+				case "ECDH-ES+A128KW":
+				case "ECDH-ES+A192KW":
+				case "ECDH-ES+A256KW":
+					algorithm$1 = { name: jwk.crv };
+					keyUsages = jwk.d ? ["deriveBits"] : [];
+					break;
+				default: throw new JOSENotSupported(unsupportedAlg);
+			}
+			break;
+		default: throw new JOSENotSupported("Invalid or unsupported JWK \"kty\" (Key Type) Parameter value");
+	}
+	return {
+		algorithm: algorithm$1,
+		keyUsages
+	};
+}
+async function jwkToKey(jwk) {
+	if (!jwk.alg) throw new TypeError("\"alg\" argument is required when \"jwk.alg\" is not present");
+	const { algorithm: algorithm$1, keyUsages } = subtleMapping(jwk);
+	const keyData = { ...jwk };
+	if (keyData.kty !== "AKP") delete keyData.alg;
+	delete keyData.use;
+	return crypto.subtle.importKey("jwk", keyData, algorithm$1, jwk.ext ?? (jwk.d || jwk.priv ? false : true), jwk.key_ops ?? keyUsages);
+}
+var unusableForAlg = "given KeyObject instance cannot be used for this algorithm";
+var cache$1;
+var handleJWK = async (key, jwk, alg$1, freeze = false) => {
+	cache$1 ||= /* @__PURE__ */ new WeakMap();
+	let cached$1 = cache$1.get(key);
+	if (cached$1?.[alg$1]) return cached$1[alg$1];
+	const cryptoKey = await jwkToKey({
+		...jwk,
+		alg: alg$1
+	});
+	if (freeze) Object.freeze(key);
+	if (!cached$1) cache$1.set(key, { [alg$1]: cryptoKey });
+	else cached$1[alg$1] = cryptoKey;
+	return cryptoKey;
+};
+var handleKeyObject = (keyObject, alg$1) => {
+	cache$1 ||= /* @__PURE__ */ new WeakMap();
+	let cached$1 = cache$1.get(keyObject);
+	if (cached$1?.[alg$1]) return cached$1[alg$1];
+	const isPublic$5 = keyObject.type === "public";
+	const extractable = isPublic$5 ? true : false;
+	let cryptoKey;
+	if (keyObject.asymmetricKeyType === "x25519") {
+		switch (alg$1) {
+			case "ECDH-ES":
+			case "ECDH-ES+A128KW":
+			case "ECDH-ES+A192KW":
+			case "ECDH-ES+A256KW": break;
+			default: throw new TypeError(unusableForAlg);
+		}
+		cryptoKey = keyObject.toCryptoKey(keyObject.asymmetricKeyType, extractable, isPublic$5 ? [] : ["deriveBits"]);
+	}
+	if (keyObject.asymmetricKeyType === "ed25519") {
+		if (alg$1 !== "EdDSA" && alg$1 !== "Ed25519") throw new TypeError(unusableForAlg);
+		cryptoKey = keyObject.toCryptoKey(keyObject.asymmetricKeyType, extractable, [isPublic$5 ? "verify" : "sign"]);
+	}
+	switch (keyObject.asymmetricKeyType) {
+		case "ml-dsa-44":
+		case "ml-dsa-65":
+		case "ml-dsa-87":
+			if (alg$1 !== keyObject.asymmetricKeyType.toUpperCase()) throw new TypeError(unusableForAlg);
+			cryptoKey = keyObject.toCryptoKey(keyObject.asymmetricKeyType, extractable, [isPublic$5 ? "verify" : "sign"]);
+	}
+	if (keyObject.asymmetricKeyType === "rsa") {
+		let hash$1;
+		switch (alg$1) {
+			case "RSA-OAEP":
+				hash$1 = "SHA-1";
+				break;
+			case "RS256":
+			case "PS256":
+			case "RSA-OAEP-256":
+				hash$1 = "SHA-256";
+				break;
+			case "RS384":
+			case "PS384":
+			case "RSA-OAEP-384":
+				hash$1 = "SHA-384";
+				break;
+			case "RS512":
+			case "PS512":
+			case "RSA-OAEP-512":
+				hash$1 = "SHA-512";
+				break;
+			default: throw new TypeError(unusableForAlg);
+		}
+		if (alg$1.startsWith("RSA-OAEP")) return keyObject.toCryptoKey({
+			name: "RSA-OAEP",
+			hash: hash$1
+		}, extractable, isPublic$5 ? ["encrypt"] : ["decrypt"]);
+		cryptoKey = keyObject.toCryptoKey({
+			name: alg$1.startsWith("PS") ? "RSA-PSS" : "RSASSA-PKCS1-v1_5",
+			hash: hash$1
+		}, extractable, [isPublic$5 ? "verify" : "sign"]);
+	}
+	if (keyObject.asymmetricKeyType === "ec") {
+		const namedCurve = new Map([
+			["prime256v1", "P-256"],
+			["secp384r1", "P-384"],
+			["secp521r1", "P-521"]
+		]).get(keyObject.asymmetricKeyDetails?.namedCurve);
+		if (!namedCurve) throw new TypeError(unusableForAlg);
+		const expectedCurve = {
+			ES256: "P-256",
+			ES384: "P-384",
+			ES512: "P-521"
+		};
+		if (expectedCurve[alg$1] && namedCurve === expectedCurve[alg$1]) cryptoKey = keyObject.toCryptoKey({
+			name: "ECDSA",
+			namedCurve
+		}, extractable, [isPublic$5 ? "verify" : "sign"]);
+		if (alg$1.startsWith("ECDH-ES")) cryptoKey = keyObject.toCryptoKey({
+			name: "ECDH",
+			namedCurve
+		}, extractable, isPublic$5 ? [] : ["deriveBits"]);
+	}
+	if (!cryptoKey) throw new TypeError(unusableForAlg);
+	if (!cached$1) cache$1.set(keyObject, { [alg$1]: cryptoKey });
+	else cached$1[alg$1] = cryptoKey;
+	return cryptoKey;
+};
+async function normalizeKey(key, alg$1) {
+	if (key instanceof Uint8Array) return key;
+	if (isCryptoKey(key)) return key;
+	if (isKeyObject(key)) {
+		if (key.type === "secret") return key.export();
+		if ("toCryptoKey" in key && typeof key.toCryptoKey === "function") try {
+			return handleKeyObject(key, alg$1);
+		} catch (err) {
+			if (err instanceof TypeError) throw err;
+		}
+		return handleJWK(key, key.export({ format: "jwk" }), alg$1);
+	}
+	if (isJWK(key)) {
+		if (key.k) return decode$3(key.k);
+		return handleJWK(key, key, alg$1, true);
+	}
+	throw new Error("unreachable");
+}
+async function importJWK(jwk, alg$1, options) {
+	if (!isObject$1(jwk)) throw new TypeError("JWK must be an object");
+	let ext;
+	alg$1 ??= jwk.alg;
+	ext ??= options?.extractable ?? jwk.ext;
+	switch (jwk.kty) {
+		case "oct":
+			if (typeof jwk.k !== "string" || !jwk.k) throw new TypeError("missing \"k\" (Key Value) Parameter value");
+			return decode$3(jwk.k);
+		case "RSA":
+			if ("oth" in jwk && jwk.oth !== void 0) throw new JOSENotSupported("RSA JWK \"oth\" (Other Primes Info) Parameter value is not supported");
+			return jwkToKey({
+				...jwk,
+				alg: alg$1,
+				ext
+			});
+		case "AKP":
+			if (typeof jwk.alg !== "string" || !jwk.alg) throw new TypeError("missing \"alg\" (Algorithm) Parameter value");
+			if (alg$1 !== void 0 && alg$1 !== jwk.alg) throw new TypeError("JWK alg and alg option value mismatch");
+			return jwkToKey({
+				...jwk,
+				ext
+			});
+		case "EC":
+		case "OKP": return jwkToKey({
+			...jwk,
+			alg: alg$1,
+			ext
+		});
+		default: throw new JOSENotSupported("Unsupported \"kty\" (Key Type) Parameter value");
+	}
+}
+async function keyToJWK(key) {
+	if (isKeyObject(key)) if (key.type === "secret") key = key.export();
+	else return key.export({ format: "jwk" });
+	if (key instanceof Uint8Array) return {
+		kty: "oct",
+		k: encode$3(key)
+	};
+	if (!isCryptoKey(key)) throw new TypeError(invalidKeyInput(key, "CryptoKey", "KeyObject", "Uint8Array"));
+	if (!key.extractable) throw new TypeError("non-extractable CryptoKey cannot be exported as a JWK");
+	const { ext, key_ops, alg: alg$1, use: use$1, ...jwk } = await crypto.subtle.exportKey("jwk", key);
+	if (jwk.kty === "AKP") jwk.alg = alg$1;
+	return jwk;
+}
+async function exportJWK(key) {
+	return keyToJWK(key);
+}
+async function wrap(alg$1, key, cek, iv) {
+	const wrapped = await encrypt(alg$1.slice(0, 7), cek, key, iv, new Uint8Array());
+	return {
+		encryptedKey: wrapped.ciphertext,
+		iv: encode$3(wrapped.iv),
+		tag: encode$3(wrapped.tag)
+	};
+}
+async function unwrap(alg$1, key, encryptedKey, iv, tag$1) {
+	return decrypt(alg$1.slice(0, 7), key, encryptedKey, iv, tag$1, new Uint8Array());
+}
+var unsupportedAlgHeader = "Invalid or unsupported \"alg\" (JWE Algorithm) header value";
+function assertEncryptedKey(encryptedKey) {
+	if (encryptedKey === void 0) throw new JWEInvalid("JWE Encrypted Key missing");
+}
+async function decryptKeyManagement(alg$1, key, encryptedKey, joseHeader, options) {
+	switch (alg$1) {
+		case "dir":
+			if (encryptedKey !== void 0) throw new JWEInvalid("Encountered unexpected JWE Encrypted Key");
+			return key;
+		case "ECDH-ES": if (encryptedKey !== void 0) throw new JWEInvalid("Encountered unexpected JWE Encrypted Key");
+		case "ECDH-ES+A128KW":
+		case "ECDH-ES+A192KW":
+		case "ECDH-ES+A256KW": {
+			if (!isObject$1(joseHeader.epk)) throw new JWEInvalid(`JOSE Header "epk" (Ephemeral Public Key) missing or invalid`);
+			assertCryptoKey(key);
+			if (!allowed(key)) throw new JOSENotSupported("ECDH with the provided key is not allowed or not supported by your javascript runtime");
+			const epk = await importJWK(joseHeader.epk, alg$1);
+			assertCryptoKey(epk);
+			let partyUInfo;
+			let partyVInfo;
+			if (joseHeader.apu !== void 0) {
+				if (typeof joseHeader.apu !== "string") throw new JWEInvalid(`JOSE Header "apu" (Agreement PartyUInfo) invalid`);
+				partyUInfo = decodeBase64url(joseHeader.apu, "apu", JWEInvalid);
+			}
+			if (joseHeader.apv !== void 0) {
+				if (typeof joseHeader.apv !== "string") throw new JWEInvalid(`JOSE Header "apv" (Agreement PartyVInfo) invalid`);
+				partyVInfo = decodeBase64url(joseHeader.apv, "apv", JWEInvalid);
+			}
+			const sharedSecret = await deriveKey$1(epk, key, alg$1 === "ECDH-ES" ? joseHeader.enc : alg$1, alg$1 === "ECDH-ES" ? cekLength(joseHeader.enc) : parseInt(alg$1.slice(-5, -2), 10), partyUInfo, partyVInfo);
+			if (alg$1 === "ECDH-ES") return sharedSecret;
+			assertEncryptedKey(encryptedKey);
+			return unwrap$2(alg$1.slice(-6), sharedSecret, encryptedKey);
+		}
+		case "RSA-OAEP":
+		case "RSA-OAEP-256":
+		case "RSA-OAEP-384":
+		case "RSA-OAEP-512":
+			assertEncryptedKey(encryptedKey);
+			assertCryptoKey(key);
+			return decrypt$1(alg$1, key, encryptedKey);
+		case "PBES2-HS256+A128KW":
+		case "PBES2-HS384+A192KW":
+		case "PBES2-HS512+A256KW": {
+			assertEncryptedKey(encryptedKey);
+			if (typeof joseHeader.p2c !== "number") throw new JWEInvalid(`JOSE Header "p2c" (PBES2 Count) missing or invalid`);
+			const p2cLimit = options?.maxPBES2Count || 1e4;
+			if (joseHeader.p2c > p2cLimit) throw new JWEInvalid(`JOSE Header "p2c" (PBES2 Count) out is of acceptable bounds`);
+			if (typeof joseHeader.p2s !== "string") throw new JWEInvalid(`JOSE Header "p2s" (PBES2 Salt) missing or invalid`);
+			let p2s;
+			p2s = decodeBase64url(joseHeader.p2s, "p2s", JWEInvalid);
+			return unwrap$1(alg$1, key, encryptedKey, joseHeader.p2c, p2s);
+		}
+		case "A128KW":
+		case "A192KW":
+		case "A256KW":
+			assertEncryptedKey(encryptedKey);
+			return unwrap$2(alg$1, key, encryptedKey);
+		case "A128GCMKW":
+		case "A192GCMKW":
+		case "A256GCMKW": {
+			assertEncryptedKey(encryptedKey);
+			if (typeof joseHeader.iv !== "string") throw new JWEInvalid(`JOSE Header "iv" (Initialization Vector) missing or invalid`);
+			if (typeof joseHeader.tag !== "string") throw new JWEInvalid(`JOSE Header "tag" (Authentication Tag) missing or invalid`);
+			let iv;
+			iv = decodeBase64url(joseHeader.iv, "iv", JWEInvalid);
+			let tag$1;
+			tag$1 = decodeBase64url(joseHeader.tag, "tag", JWEInvalid);
+			return unwrap(alg$1, key, encryptedKey, iv, tag$1);
+		}
+		default: throw new JOSENotSupported(unsupportedAlgHeader);
+	}
+}
+async function encryptKeyManagement(alg$1, enc$1, key, providedCek, providedParameters = {}) {
+	let encryptedKey;
+	let parameters;
+	let cek;
+	switch (alg$1) {
+		case "dir":
+			cek = key;
+			break;
+		case "ECDH-ES":
+		case "ECDH-ES+A128KW":
+		case "ECDH-ES+A192KW":
+		case "ECDH-ES+A256KW": {
+			assertCryptoKey(key);
+			if (!allowed(key)) throw new JOSENotSupported("ECDH with the provided key is not allowed or not supported by your javascript runtime");
+			const { apu, apv } = providedParameters;
+			let ephemeralKey;
+			if (providedParameters.epk) ephemeralKey = await normalizeKey(providedParameters.epk, alg$1);
+			else ephemeralKey = (await crypto.subtle.generateKey(key.algorithm, true, ["deriveBits"])).privateKey;
+			const { x, y, crv, kty } = await exportJWK(ephemeralKey);
+			const sharedSecret = await deriveKey$1(key, ephemeralKey, alg$1 === "ECDH-ES" ? enc$1 : alg$1, alg$1 === "ECDH-ES" ? cekLength(enc$1) : parseInt(alg$1.slice(-5, -2), 10), apu, apv);
+			parameters = { epk: {
+				x,
+				crv,
+				kty
+			} };
+			if (kty === "EC") parameters.epk.y = y;
+			if (apu) parameters.apu = encode$3(apu);
+			if (apv) parameters.apv = encode$3(apv);
+			if (alg$1 === "ECDH-ES") {
+				cek = sharedSecret;
+				break;
+			}
+			cek = providedCek || generateCek(enc$1);
+			encryptedKey = await wrap$2(alg$1.slice(-6), sharedSecret, cek);
+			break;
+		}
+		case "RSA-OAEP":
+		case "RSA-OAEP-256":
+		case "RSA-OAEP-384":
+		case "RSA-OAEP-512":
+			cek = providedCek || generateCek(enc$1);
+			assertCryptoKey(key);
+			encryptedKey = await encrypt$1(alg$1, key, cek);
+			break;
+		case "PBES2-HS256+A128KW":
+		case "PBES2-HS384+A192KW":
+		case "PBES2-HS512+A256KW": {
+			cek = providedCek || generateCek(enc$1);
+			const { p2c, p2s } = providedParameters;
+			({encryptedKey, ...parameters} = await wrap$1(alg$1, key, cek, p2c, p2s));
+			break;
+		}
+		case "A128KW":
+		case "A192KW":
+		case "A256KW":
+			cek = providedCek || generateCek(enc$1);
+			encryptedKey = await wrap$2(alg$1, key, cek);
+			break;
+		case "A128GCMKW":
+		case "A192GCMKW":
+		case "A256GCMKW": {
+			cek = providedCek || generateCek(enc$1);
+			const { iv } = providedParameters;
+			({encryptedKey, ...parameters} = await wrap(alg$1, key, cek, iv));
+			break;
+		}
+		default: throw new JOSENotSupported(unsupportedAlgHeader);
+	}
+	return {
+		cek,
+		encryptedKey,
+		parameters
+	};
+}
+function validateCrit(Err, recognizedDefault, recognizedOption, protectedHeader, joseHeader) {
+	if (joseHeader.crit !== void 0 && protectedHeader?.crit === void 0) throw new Err("\"crit\" (Critical) Header Parameter MUST be integrity protected");
+	if (!protectedHeader || protectedHeader.crit === void 0) return /* @__PURE__ */ new Set();
+	if (!Array.isArray(protectedHeader.crit) || protectedHeader.crit.length === 0 || protectedHeader.crit.some((input) => typeof input !== "string" || input.length === 0)) throw new Err("\"crit\" (Critical) Header Parameter MUST be an array of non-empty strings when present");
+	let recognized;
+	if (recognizedOption !== void 0) recognized = new Map([...Object.entries(recognizedOption), ...recognizedDefault.entries()]);
+	else recognized = recognizedDefault;
+	for (const parameter of protectedHeader.crit) {
+		if (!recognized.has(parameter)) throw new JOSENotSupported(`Extension Header Parameter "${parameter}" is not recognized`);
+		if (joseHeader[parameter] === void 0) throw new Err(`Extension Header Parameter "${parameter}" is missing`);
+		if (recognized.get(parameter) && protectedHeader[parameter] === void 0) throw new Err(`Extension Header Parameter "${parameter}" MUST be integrity protected`);
+	}
+	return new Set(protectedHeader.crit);
+}
+function validateAlgorithms(option, algorithms) {
+	if (algorithms !== void 0 && (!Array.isArray(algorithms) || algorithms.some((s) => typeof s !== "string"))) throw new TypeError(`"${option}" option must be an array of strings`);
+	if (!algorithms) return;
+	return new Set(algorithms);
+}
+var tag = (key) => key?.[Symbol.toStringTag];
+var jwkMatchesOp = (alg$1, key, usage) => {
+	if (key.use !== void 0) {
+		let expected;
+		switch (usage) {
+			case "sign":
+			case "verify":
+				expected = "sig";
+				break;
+			case "encrypt":
+			case "decrypt":
+				expected = "enc";
+				break;
+		}
+		if (key.use !== expected) throw new TypeError(`Invalid key for this operation, its "use" must be "${expected}" when present`);
+	}
+	if (key.alg !== void 0 && key.alg !== alg$1) throw new TypeError(`Invalid key for this operation, its "alg" must be "${alg$1}" when present`);
+	if (Array.isArray(key.key_ops)) {
+		let expectedKeyOp;
+		switch (true) {
+			case usage === "sign" || usage === "verify":
+			case alg$1 === "dir":
+			case alg$1.includes("CBC-HS"):
+				expectedKeyOp = usage;
+				break;
+			case alg$1.startsWith("PBES2"):
+				expectedKeyOp = "deriveBits";
+				break;
+			case /^A\d{3}(?:GCM)?(?:KW)?$/.test(alg$1):
+				if (!alg$1.includes("GCM") && alg$1.endsWith("KW")) expectedKeyOp = usage === "encrypt" ? "wrapKey" : "unwrapKey";
+				else expectedKeyOp = usage;
+				break;
+			case usage === "encrypt" && alg$1.startsWith("RSA"):
+				expectedKeyOp = "wrapKey";
+				break;
+			case usage === "decrypt":
+				expectedKeyOp = alg$1.startsWith("RSA") ? "unwrapKey" : "deriveBits";
+				break;
+		}
+		if (expectedKeyOp && key.key_ops?.includes?.(expectedKeyOp) === false) throw new TypeError(`Invalid key for this operation, its "key_ops" must include "${expectedKeyOp}" when present`);
+	}
+	return true;
+};
+var symmetricTypeCheck = (alg$1, key, usage) => {
+	if (key instanceof Uint8Array) return;
+	if (isJWK(key)) {
+		if (isSecretJWK(key) && jwkMatchesOp(alg$1, key, usage)) return;
+		throw new TypeError(`JSON Web Key for symmetric algorithms must have JWK "kty" (Key Type) equal to "oct" and the JWK "k" (Key Value) present`);
+	}
+	if (!isKeyLike(key)) throw new TypeError(withAlg(alg$1, key, "CryptoKey", "KeyObject", "JSON Web Key", "Uint8Array"));
+	if (key.type !== "secret") throw new TypeError(`${tag(key)} instances for symmetric algorithms must be of type "secret"`);
+};
+var asymmetricTypeCheck = (alg$1, key, usage) => {
+	if (isJWK(key)) switch (usage) {
+		case "decrypt":
+		case "sign":
+			if (isPrivateJWK(key) && jwkMatchesOp(alg$1, key, usage)) return;
+			throw new TypeError(`JSON Web Key for this operation must be a private JWK`);
+		case "encrypt":
+		case "verify":
+			if (isPublicJWK(key) && jwkMatchesOp(alg$1, key, usage)) return;
+			throw new TypeError(`JSON Web Key for this operation must be a public JWK`);
+	}
+	if (!isKeyLike(key)) throw new TypeError(withAlg(alg$1, key, "CryptoKey", "KeyObject", "JSON Web Key"));
+	if (key.type === "secret") throw new TypeError(`${tag(key)} instances for asymmetric algorithms must not be of type "secret"`);
+	if (key.type === "public") switch (usage) {
+		case "sign": throw new TypeError(`${tag(key)} instances for asymmetric algorithm signing must be of type "private"`);
+		case "decrypt": throw new TypeError(`${tag(key)} instances for asymmetric algorithm decryption must be of type "private"`);
+	}
+	if (key.type === "private") switch (usage) {
+		case "verify": throw new TypeError(`${tag(key)} instances for asymmetric algorithm verifying must be of type "public"`);
+		case "encrypt": throw new TypeError(`${tag(key)} instances for asymmetric algorithm encryption must be of type "public"`);
+	}
+};
+function checkKeyType(alg$1, key, usage) {
+	switch (alg$1.substring(0, 2)) {
+		case "A1":
+		case "A2":
+		case "di":
+		case "HS":
+		case "PB":
+			symmetricTypeCheck(alg$1, key, usage);
+			break;
+		default: asymmetricTypeCheck(alg$1, key, usage);
+	}
+}
+function supported(name) {
+	if (typeof globalThis[name] === "undefined") throw new JOSENotSupported(`JWE "zip" (Compression Algorithm) Header Parameter requires the ${name} API.`);
+}
+async function compress(input) {
+	supported("CompressionStream");
+	const cs = new CompressionStream("deflate-raw");
+	const writer = cs.writable.getWriter();
+	writer.write(input).catch(() => {});
+	writer.close().catch(() => {});
+	const chunks = [];
+	const reader = cs.readable.getReader();
+	for (;;) {
+		const { value, done } = await reader.read();
+		if (done) break;
+		chunks.push(value);
+	}
+	return concat$2(...chunks);
+}
+async function decompress(input, maxLength) {
+	supported("DecompressionStream");
+	const ds = new DecompressionStream("deflate-raw");
+	const writer = ds.writable.getWriter();
+	writer.write(input).catch(() => {});
+	writer.close().catch(() => {});
+	const chunks = [];
+	let length = 0;
+	const reader = ds.readable.getReader();
+	for (;;) {
+		const { value, done } = await reader.read();
+		if (done) break;
+		chunks.push(value);
+		length += value.byteLength;
+		if (maxLength !== Infinity && length > maxLength) throw new JWEInvalid("Decompressed plaintext exceeded the configured limit");
+	}
+	return concat$2(...chunks);
+}
+async function flattenedDecrypt(jwe, key, options) {
+	if (!isObject$1(jwe)) throw new JWEInvalid("Flattened JWE must be an object");
+	if (jwe.protected === void 0 && jwe.header === void 0 && jwe.unprotected === void 0) throw new JWEInvalid("JOSE Header missing");
+	if (jwe.iv !== void 0 && typeof jwe.iv !== "string") throw new JWEInvalid("JWE Initialization Vector incorrect type");
+	if (typeof jwe.ciphertext !== "string") throw new JWEInvalid("JWE Ciphertext missing or incorrect type");
+	if (jwe.tag !== void 0 && typeof jwe.tag !== "string") throw new JWEInvalid("JWE Authentication Tag incorrect type");
+	if (jwe.protected !== void 0 && typeof jwe.protected !== "string") throw new JWEInvalid("JWE Protected Header incorrect type");
+	if (jwe.encrypted_key !== void 0 && typeof jwe.encrypted_key !== "string") throw new JWEInvalid("JWE Encrypted Key incorrect type");
+	if (jwe.aad !== void 0 && typeof jwe.aad !== "string") throw new JWEInvalid("JWE AAD incorrect type");
+	if (jwe.header !== void 0 && !isObject$1(jwe.header)) throw new JWEInvalid("JWE Shared Unprotected Header incorrect type");
+	if (jwe.unprotected !== void 0 && !isObject$1(jwe.unprotected)) throw new JWEInvalid("JWE Per-Recipient Unprotected Header incorrect type");
+	let parsedProt;
+	if (jwe.protected) try {
+		const protectedHeader$1 = decode$3(jwe.protected);
+		parsedProt = JSON.parse(decoder.decode(protectedHeader$1));
+	} catch {
+		throw new JWEInvalid("JWE Protected Header is invalid");
+	}
+	if (!isDisjoint(parsedProt, jwe.header, jwe.unprotected)) throw new JWEInvalid("JWE Protected, JWE Unprotected Header, and JWE Per-Recipient Unprotected Header Parameter names must be disjoint");
+	const joseHeader = {
+		...parsedProt,
+		...jwe.header,
+		...jwe.unprotected
+	};
+	validateCrit(JWEInvalid, /* @__PURE__ */ new Map(), options?.crit, parsedProt, joseHeader);
+	if (joseHeader.zip !== void 0 && joseHeader.zip !== "DEF") throw new JOSENotSupported("Unsupported JWE \"zip\" (Compression Algorithm) Header Parameter value.");
+	if (joseHeader.zip !== void 0 && !parsedProt?.zip) throw new JWEInvalid("JWE \"zip\" (Compression Algorithm) Header Parameter MUST be in a protected header.");
+	const { alg: alg$1, enc: enc$1 } = joseHeader;
+	if (typeof alg$1 !== "string" || !alg$1) throw new JWEInvalid("missing JWE Algorithm (alg) in JWE Header");
+	if (typeof enc$1 !== "string" || !enc$1) throw new JWEInvalid("missing JWE Encryption Algorithm (enc) in JWE Header");
+	const keyManagementAlgorithms = options && validateAlgorithms("keyManagementAlgorithms", options.keyManagementAlgorithms);
+	const contentEncryptionAlgorithms = options && validateAlgorithms("contentEncryptionAlgorithms", options.contentEncryptionAlgorithms);
+	if (keyManagementAlgorithms && !keyManagementAlgorithms.has(alg$1) || !keyManagementAlgorithms && alg$1.startsWith("PBES2")) throw new JOSEAlgNotAllowed("\"alg\" (Algorithm) Header Parameter value not allowed");
+	if (contentEncryptionAlgorithms && !contentEncryptionAlgorithms.has(enc$1)) throw new JOSEAlgNotAllowed("\"enc\" (Encryption Algorithm) Header Parameter value not allowed");
+	let encryptedKey;
+	if (jwe.encrypted_key !== void 0) encryptedKey = decodeBase64url(jwe.encrypted_key, "encrypted_key", JWEInvalid);
+	let resolvedKey = false;
+	if (typeof key === "function") {
+		key = await key(parsedProt, jwe);
+		resolvedKey = true;
+	}
+	checkKeyType(alg$1 === "dir" ? enc$1 : alg$1, key, "decrypt");
+	const k = await normalizeKey(key, alg$1);
+	let cek;
+	try {
+		cek = await decryptKeyManagement(alg$1, k, encryptedKey, joseHeader, options);
+	} catch (err) {
+		if (err instanceof TypeError || err instanceof JWEInvalid || err instanceof JOSENotSupported) throw err;
+		cek = generateCek(enc$1);
+	}
+	let iv;
+	let tag$1;
+	if (jwe.iv !== void 0) iv = decodeBase64url(jwe.iv, "iv", JWEInvalid);
+	if (jwe.tag !== void 0) tag$1 = decodeBase64url(jwe.tag, "tag", JWEInvalid);
+	const protectedHeader = jwe.protected !== void 0 ? encode$4(jwe.protected) : new Uint8Array();
+	let additionalData;
+	if (jwe.aad !== void 0) additionalData = concat$2(protectedHeader, encode$4("."), encode$4(jwe.aad));
+	else additionalData = protectedHeader;
+	const ciphertext = decodeBase64url(jwe.ciphertext, "ciphertext", JWEInvalid);
+	const plaintext = await decrypt(enc$1, cek, ciphertext, iv, tag$1, additionalData);
+	const result = { plaintext };
+	if (joseHeader.zip === "DEF") {
+		const maxDecompressedLength = options?.maxDecompressedLength ?? 25e4;
+		if (maxDecompressedLength === 0) throw new JOSENotSupported("JWE \"zip\" (Compression Algorithm) Header Parameter is not supported.");
+		if (maxDecompressedLength !== Infinity && (!Number.isSafeInteger(maxDecompressedLength) || maxDecompressedLength < 1)) throw new TypeError("maxDecompressedLength must be 0, a positive safe integer, or Infinity");
+		result.plaintext = await decompress(plaintext, maxDecompressedLength).catch((cause) => {
+			if (cause instanceof JWEInvalid) throw cause;
+			throw new JWEInvalid("Failed to decompress plaintext", { cause });
+		});
+	}
+	if (jwe.protected !== void 0) result.protectedHeader = parsedProt;
+	if (jwe.aad !== void 0) result.additionalAuthenticatedData = decodeBase64url(jwe.aad, "aad", JWEInvalid);
+	if (jwe.unprotected !== void 0) result.sharedUnprotectedHeader = jwe.unprotected;
+	if (jwe.header !== void 0) result.unprotectedHeader = jwe.header;
+	if (resolvedKey) return {
+		...result,
+		key: k
+	};
+	return result;
+}
+async function compactDecrypt(jwe, key, options) {
+	if (jwe instanceof Uint8Array) jwe = decoder.decode(jwe);
+	if (typeof jwe !== "string") throw new JWEInvalid("Compact JWE must be a string or Uint8Array");
+	const { 0: protectedHeader, 1: encryptedKey, 2: iv, 3: ciphertext, 4: tag$1, length } = jwe.split(".");
+	if (length !== 5) throw new JWEInvalid("Invalid Compact JWE");
+	const decrypted = await flattenedDecrypt({
+		ciphertext,
+		iv: iv || void 0,
+		protected: protectedHeader,
+		tag: tag$1 || void 0,
+		encrypted_key: encryptedKey || void 0
+	}, key, options);
+	const result = {
+		plaintext: decrypted.plaintext,
+		protectedHeader: decrypted.protectedHeader
+	};
+	if (typeof key === "function") return {
+		...result,
+		key: decrypted.key
+	};
+	return result;
+}
+var FlattenedEncrypt = class {
+	#plaintext;
+	#protectedHeader;
+	#sharedUnprotectedHeader;
+	#unprotectedHeader;
+	#aad;
+	#cek;
+	#iv;
+	#keyManagementParameters;
+	constructor(plaintext) {
+		if (!(plaintext instanceof Uint8Array)) throw new TypeError("plaintext must be an instance of Uint8Array");
+		this.#plaintext = plaintext;
+	}
+	setKeyManagementParameters(parameters) {
+		assertNotSet(this.#keyManagementParameters, "setKeyManagementParameters");
+		this.#keyManagementParameters = parameters;
+		return this;
+	}
+	setProtectedHeader(protectedHeader) {
+		assertNotSet(this.#protectedHeader, "setProtectedHeader");
+		this.#protectedHeader = protectedHeader;
+		return this;
+	}
+	setSharedUnprotectedHeader(sharedUnprotectedHeader) {
+		assertNotSet(this.#sharedUnprotectedHeader, "setSharedUnprotectedHeader");
+		this.#sharedUnprotectedHeader = sharedUnprotectedHeader;
+		return this;
+	}
+	setUnprotectedHeader(unprotectedHeader) {
+		assertNotSet(this.#unprotectedHeader, "setUnprotectedHeader");
+		this.#unprotectedHeader = unprotectedHeader;
+		return this;
+	}
+	setAdditionalAuthenticatedData(aad) {
+		this.#aad = aad;
+		return this;
+	}
+	setContentEncryptionKey(cek) {
+		assertNotSet(this.#cek, "setContentEncryptionKey");
+		this.#cek = cek;
+		return this;
+	}
+	setInitializationVector(iv) {
+		assertNotSet(this.#iv, "setInitializationVector");
+		this.#iv = iv;
+		return this;
+	}
+	async encrypt(key, options) {
+		if (!this.#protectedHeader && !this.#unprotectedHeader && !this.#sharedUnprotectedHeader) throw new JWEInvalid("either setProtectedHeader, setUnprotectedHeader, or sharedUnprotectedHeader must be called before #encrypt()");
+		if (!isDisjoint(this.#protectedHeader, this.#unprotectedHeader, this.#sharedUnprotectedHeader)) throw new JWEInvalid("JWE Protected, JWE Shared Unprotected and JWE Per-Recipient Header Parameter names must be disjoint");
+		const joseHeader = {
+			...this.#protectedHeader,
+			...this.#unprotectedHeader,
+			...this.#sharedUnprotectedHeader
+		};
+		validateCrit(JWEInvalid, /* @__PURE__ */ new Map(), options?.crit, this.#protectedHeader, joseHeader);
+		if (joseHeader.zip !== void 0 && joseHeader.zip !== "DEF") throw new JOSENotSupported("Unsupported JWE \"zip\" (Compression Algorithm) Header Parameter value.");
+		if (joseHeader.zip !== void 0 && !this.#protectedHeader?.zip) throw new JWEInvalid("JWE \"zip\" (Compression Algorithm) Header Parameter MUST be in a protected header.");
+		const { alg: alg$1, enc: enc$1 } = joseHeader;
+		if (typeof alg$1 !== "string" || !alg$1) throw new JWEInvalid("JWE \"alg\" (Algorithm) Header Parameter missing or invalid");
+		if (typeof enc$1 !== "string" || !enc$1) throw new JWEInvalid("JWE \"enc\" (Encryption Algorithm) Header Parameter missing or invalid");
+		let encryptedKey;
+		if (this.#cek && (alg$1 === "dir" || alg$1 === "ECDH-ES")) throw new TypeError(`setContentEncryptionKey cannot be called with JWE "alg" (Algorithm) Header ${alg$1}`);
+		checkKeyType(alg$1 === "dir" ? enc$1 : alg$1, key, "encrypt");
+		let cek;
+		{
+			let parameters;
+			const k = await normalizeKey(key, alg$1);
+			({cek, encryptedKey, parameters} = await encryptKeyManagement(alg$1, enc$1, k, this.#cek, this.#keyManagementParameters));
+			if (parameters) if (options && unprotected in options) if (!this.#unprotectedHeader) this.setUnprotectedHeader(parameters);
+			else this.#unprotectedHeader = {
+				...this.#unprotectedHeader,
+				...parameters
+			};
+			else if (!this.#protectedHeader) this.setProtectedHeader(parameters);
+			else this.#protectedHeader = {
+				...this.#protectedHeader,
+				...parameters
+			};
+		}
+		let additionalData;
+		let protectedHeaderS;
+		let protectedHeaderB;
+		let aadMember;
+		if (this.#protectedHeader) {
+			protectedHeaderS = encode$3(JSON.stringify(this.#protectedHeader));
+			protectedHeaderB = encode$4(protectedHeaderS);
+		} else {
+			protectedHeaderS = "";
+			protectedHeaderB = new Uint8Array();
+		}
+		if (this.#aad) {
+			aadMember = encode$3(this.#aad);
+			const aadMemberBytes = encode$4(aadMember);
+			additionalData = concat$2(protectedHeaderB, encode$4("."), aadMemberBytes);
+		} else additionalData = protectedHeaderB;
+		let plaintext = this.#plaintext;
+		if (joseHeader.zip === "DEF") plaintext = await compress(plaintext).catch((cause) => {
+			throw new JWEInvalid("Failed to compress plaintext", { cause });
+		});
+		const { ciphertext, tag: tag$1, iv } = await encrypt(enc$1, plaintext, cek, this.#iv, additionalData);
+		const jwe = { ciphertext: encode$3(ciphertext) };
+		if (iv) jwe.iv = encode$3(iv);
+		if (tag$1) jwe.tag = encode$3(tag$1);
+		if (encryptedKey) jwe.encrypted_key = encode$3(encryptedKey);
+		if (aadMember) jwe.aad = aadMember;
+		if (this.#protectedHeader) jwe.protected = protectedHeaderS;
+		if (this.#sharedUnprotectedHeader) jwe.unprotected = this.#sharedUnprotectedHeader;
+		if (this.#unprotectedHeader) jwe.header = this.#unprotectedHeader;
+		return jwe;
+	}
+};
+async function flattenedVerify(jws, key, options) {
+	if (!isObject$1(jws)) throw new JWSInvalid("Flattened JWS must be an object");
+	if (jws.protected === void 0 && jws.header === void 0) throw new JWSInvalid("Flattened JWS must have either of the \"protected\" or \"header\" members");
+	if (jws.protected !== void 0 && typeof jws.protected !== "string") throw new JWSInvalid("JWS Protected Header incorrect type");
+	if (jws.payload === void 0) throw new JWSInvalid("JWS Payload missing");
+	if (typeof jws.signature !== "string") throw new JWSInvalid("JWS Signature missing or incorrect type");
+	if (jws.header !== void 0 && !isObject$1(jws.header)) throw new JWSInvalid("JWS Unprotected Header incorrect type");
+	let parsedProt = {};
+	if (jws.protected) try {
+		const protectedHeader = decode$3(jws.protected);
+		parsedProt = JSON.parse(decoder.decode(protectedHeader));
+	} catch {
+		throw new JWSInvalid("JWS Protected Header is invalid");
+	}
+	if (!isDisjoint(parsedProt, jws.header)) throw new JWSInvalid("JWS Protected and JWS Unprotected Header Parameter names must be disjoint");
+	const joseHeader = {
+		...parsedProt,
+		...jws.header
+	};
+	const extensions = validateCrit(JWSInvalid, new Map([["b64", true]]), options?.crit, parsedProt, joseHeader);
+	let b64 = true;
+	if (extensions.has("b64")) {
+		b64 = parsedProt.b64;
+		if (typeof b64 !== "boolean") throw new JWSInvalid("The \"b64\" (base64url-encode payload) Header Parameter must be a boolean");
+	}
+	const { alg: alg$1 } = joseHeader;
+	if (typeof alg$1 !== "string" || !alg$1) throw new JWSInvalid("JWS \"alg\" (Algorithm) Header Parameter missing or invalid");
+	const algorithms = options && validateAlgorithms("algorithms", options.algorithms);
+	if (algorithms && !algorithms.has(alg$1)) throw new JOSEAlgNotAllowed("\"alg\" (Algorithm) Header Parameter value not allowed");
+	if (b64) {
+		if (typeof jws.payload !== "string") throw new JWSInvalid("JWS Payload must be a string");
+	} else if (typeof jws.payload !== "string" && !(jws.payload instanceof Uint8Array)) throw new JWSInvalid("JWS Payload must be a string or an Uint8Array instance");
+	let resolvedKey = false;
+	if (typeof key === "function") {
+		key = await key(parsedProt, jws);
+		resolvedKey = true;
+	}
+	checkKeyType(alg$1, key, "verify");
+	const data = concat$2(jws.protected !== void 0 ? encode$4(jws.protected) : new Uint8Array(), encode$4("."), typeof jws.payload === "string" ? b64 ? encode$4(jws.payload) : encoder.encode(jws.payload) : jws.payload);
+	const signature = decodeBase64url(jws.signature, "signature", JWSInvalid);
+	const k = await normalizeKey(key, alg$1);
+	if (!await verify(alg$1, k, signature, data)) throw new JWSSignatureVerificationFailed();
+	let payload;
+	if (b64) payload = decodeBase64url(jws.payload, "payload", JWSInvalid);
+	else if (typeof jws.payload === "string") payload = encoder.encode(jws.payload);
+	else payload = jws.payload;
+	const result = { payload };
+	if (jws.protected !== void 0) result.protectedHeader = parsedProt;
+	if (jws.header !== void 0) result.unprotectedHeader = jws.header;
+	if (resolvedKey) return {
+		...result,
+		key: k
+	};
+	return result;
+}
+async function compactVerify(jws, key, options) {
+	if (jws instanceof Uint8Array) jws = decoder.decode(jws);
+	if (typeof jws !== "string") throw new JWSInvalid("Compact JWS must be a string or Uint8Array");
+	const { 0: protectedHeader, 1: payload, 2: signature, length } = jws.split(".");
+	if (length !== 3) throw new JWSInvalid("Invalid Compact JWS");
+	const verified = await flattenedVerify({
+		payload,
+		protected: protectedHeader,
+		signature
+	}, key, options);
+	const result = {
+		payload: verified.payload,
+		protectedHeader: verified.protectedHeader
+	};
+	if (typeof key === "function") return {
+		...result,
+		key: verified.key
+	};
+	return result;
+}
+var epoch = (date$4) => Math.floor(date$4.getTime() / 1e3);
+var minute = 60;
+var hour = minute * 60;
+var day = hour * 24;
+var week = day * 7;
+var year = day * 365.25;
+var REGEX$1 = /^(\+|\-)? ?(\d+|\d+\.\d+) ?(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)(?: (ago|from now))?$/i;
+function secs(str) {
+	const matched = REGEX$1.exec(str);
+	if (!matched || matched[4] && matched[1]) throw new TypeError("Invalid time period format");
+	const value = parseFloat(matched[2]);
+	const unit = matched[3].toLowerCase();
+	let numericDate;
+	switch (unit) {
+		case "sec":
+		case "secs":
+		case "second":
+		case "seconds":
+		case "s":
+			numericDate = Math.round(value);
+			break;
+		case "minute":
+		case "minutes":
+		case "min":
+		case "mins":
+		case "m":
+			numericDate = Math.round(value * minute);
+			break;
+		case "hour":
+		case "hours":
+		case "hr":
+		case "hrs":
+		case "h":
+			numericDate = Math.round(value * hour);
+			break;
+		case "day":
+		case "days":
+		case "d":
+			numericDate = Math.round(value * day);
+			break;
+		case "week":
+		case "weeks":
+		case "w":
+			numericDate = Math.round(value * week);
+			break;
+		default:
+			numericDate = Math.round(value * year);
+			break;
+	}
+	if (matched[1] === "-" || matched[4] === "ago") return -numericDate;
+	return numericDate;
+}
+function validateInput(label, input) {
+	if (!Number.isFinite(input)) throw new TypeError(`Invalid ${label} input`);
+	return input;
+}
+var normalizeTyp = (value) => {
+	if (value.includes("/")) return value.toLowerCase();
+	return `application/${value.toLowerCase()}`;
+};
+var checkAudiencePresence = (audPayload, audOption) => {
+	if (typeof audPayload === "string") return audOption.includes(audPayload);
+	if (Array.isArray(audPayload)) return audOption.some(Set.prototype.has.bind(new Set(audPayload)));
+	return false;
+};
+function validateClaimsSet(protectedHeader, encodedPayload, options = {}) {
+	let payload;
+	try {
+		payload = JSON.parse(decoder.decode(encodedPayload));
+	} catch {}
+	if (!isObject$1(payload)) throw new JWTInvalid("JWT Claims Set must be a top-level JSON object");
+	const { typ } = options;
+	if (typ && (typeof protectedHeader.typ !== "string" || normalizeTyp(protectedHeader.typ) !== normalizeTyp(typ))) throw new JWTClaimValidationFailed("unexpected \"typ\" JWT header value", payload, "typ", "check_failed");
+	const { requiredClaims = [], issuer, subject, audience, maxTokenAge } = options;
+	const presenceCheck = [...requiredClaims];
+	if (maxTokenAge !== void 0) presenceCheck.push("iat");
+	if (audience !== void 0) presenceCheck.push("aud");
+	if (subject !== void 0) presenceCheck.push("sub");
+	if (issuer !== void 0) presenceCheck.push("iss");
+	for (const claim of new Set(presenceCheck.reverse())) if (!(claim in payload)) throw new JWTClaimValidationFailed(`missing required "${claim}" claim`, payload, claim, "missing");
+	if (issuer && !(Array.isArray(issuer) ? issuer : [issuer]).includes(payload.iss)) throw new JWTClaimValidationFailed("unexpected \"iss\" claim value", payload, "iss", "check_failed");
+	if (subject && payload.sub !== subject) throw new JWTClaimValidationFailed("unexpected \"sub\" claim value", payload, "sub", "check_failed");
+	if (audience && !checkAudiencePresence(payload.aud, typeof audience === "string" ? [audience] : audience)) throw new JWTClaimValidationFailed("unexpected \"aud\" claim value", payload, "aud", "check_failed");
+	let tolerance;
+	switch (typeof options.clockTolerance) {
+		case "string":
+			tolerance = secs(options.clockTolerance);
+			break;
+		case "number":
+			tolerance = options.clockTolerance;
+			break;
+		case "undefined":
+			tolerance = 0;
+			break;
+		default: throw new TypeError("Invalid clockTolerance option type");
+	}
+	const { currentDate } = options;
+	const now$1 = epoch(currentDate || /* @__PURE__ */ new Date());
+	if ((payload.iat !== void 0 || maxTokenAge) && typeof payload.iat !== "number") throw new JWTClaimValidationFailed("\"iat\" claim must be a number", payload, "iat", "invalid");
+	if (payload.nbf !== void 0) {
+		if (typeof payload.nbf !== "number") throw new JWTClaimValidationFailed("\"nbf\" claim must be a number", payload, "nbf", "invalid");
+		if (payload.nbf > now$1 + tolerance) throw new JWTClaimValidationFailed("\"nbf\" claim timestamp check failed", payload, "nbf", "check_failed");
+	}
+	if (payload.exp !== void 0) {
+		if (typeof payload.exp !== "number") throw new JWTClaimValidationFailed("\"exp\" claim must be a number", payload, "exp", "invalid");
+		if (payload.exp <= now$1 - tolerance) throw new JWTExpired("\"exp\" claim timestamp check failed", payload, "exp", "check_failed");
+	}
+	if (maxTokenAge) {
+		const age = now$1 - payload.iat;
+		const max = typeof maxTokenAge === "number" ? maxTokenAge : secs(maxTokenAge);
+		if (age - tolerance > max) throw new JWTExpired("\"iat\" claim timestamp check failed (too far in the past)", payload, "iat", "check_failed");
+		if (age < 0 - tolerance) throw new JWTClaimValidationFailed("\"iat\" claim timestamp check failed (it should be in the past)", payload, "iat", "check_failed");
+	}
+	return payload;
+}
+var JWTClaimsBuilder = class {
+	#payload;
+	constructor(payload) {
+		if (!isObject$1(payload)) throw new TypeError("JWT Claims Set MUST be an object");
+		this.#payload = structuredClone(payload);
+	}
+	data() {
+		return encoder.encode(JSON.stringify(this.#payload));
+	}
+	get iss() {
+		return this.#payload.iss;
+	}
+	set iss(value) {
+		this.#payload.iss = value;
+	}
+	get sub() {
+		return this.#payload.sub;
+	}
+	set sub(value) {
+		this.#payload.sub = value;
+	}
+	get aud() {
+		return this.#payload.aud;
+	}
+	set aud(value) {
+		this.#payload.aud = value;
+	}
+	set jti(value) {
+		this.#payload.jti = value;
+	}
+	set nbf(value) {
+		if (typeof value === "number") this.#payload.nbf = validateInput("setNotBefore", value);
+		else if (value instanceof Date) this.#payload.nbf = validateInput("setNotBefore", epoch(value));
+		else this.#payload.nbf = epoch(/* @__PURE__ */ new Date()) + secs(value);
+	}
+	set exp(value) {
+		if (typeof value === "number") this.#payload.exp = validateInput("setExpirationTime", value);
+		else if (value instanceof Date) this.#payload.exp = validateInput("setExpirationTime", epoch(value));
+		else this.#payload.exp = epoch(/* @__PURE__ */ new Date()) + secs(value);
+	}
+	set iat(value) {
+		if (value === void 0) this.#payload.iat = epoch(/* @__PURE__ */ new Date());
+		else if (value instanceof Date) this.#payload.iat = validateInput("setIssuedAt", epoch(value));
+		else if (typeof value === "string") this.#payload.iat = validateInput("setIssuedAt", epoch(/* @__PURE__ */ new Date()) + secs(value));
+		else this.#payload.iat = validateInput("setIssuedAt", value);
+	}
+};
+async function jwtVerify(jwt$1, key, options) {
+	const verified = await compactVerify(jwt$1, key, options);
+	if (verified.protectedHeader.crit?.includes("b64") && verified.protectedHeader.b64 === false) throw new JWTInvalid("JWTs MUST NOT use unencoded payload");
+	const result = {
+		payload: validateClaimsSet(verified.protectedHeader, verified.payload, options),
+		protectedHeader: verified.protectedHeader
+	};
+	if (typeof key === "function") return {
+		...result,
+		key: verified.key
+	};
+	return result;
+}
+async function jwtDecrypt(jwt$1, key, options) {
+	const decrypted = await compactDecrypt(jwt$1, key, options);
+	const payload = validateClaimsSet(decrypted.protectedHeader, decrypted.plaintext, options);
+	const { protectedHeader } = decrypted;
+	if (protectedHeader.iss !== void 0 && protectedHeader.iss !== payload.iss) throw new JWTClaimValidationFailed("replicated \"iss\" claim header parameter mismatch", payload, "iss", "mismatch");
+	if (protectedHeader.sub !== void 0 && protectedHeader.sub !== payload.sub) throw new JWTClaimValidationFailed("replicated \"sub\" claim header parameter mismatch", payload, "sub", "mismatch");
+	if (protectedHeader.aud !== void 0 && JSON.stringify(protectedHeader.aud) !== JSON.stringify(payload.aud)) throw new JWTClaimValidationFailed("replicated \"aud\" claim header parameter mismatch", payload, "aud", "mismatch");
+	const result = {
+		payload,
+		protectedHeader
+	};
+	if (typeof key === "function") return {
+		...result,
+		key: decrypted.key
+	};
+	return result;
+}
+var CompactEncrypt = class {
+	#flattened;
+	constructor(plaintext) {
+		this.#flattened = new FlattenedEncrypt(plaintext);
+	}
+	setContentEncryptionKey(cek) {
+		this.#flattened.setContentEncryptionKey(cek);
+		return this;
+	}
+	setInitializationVector(iv) {
+		this.#flattened.setInitializationVector(iv);
+		return this;
+	}
+	setProtectedHeader(protectedHeader) {
+		this.#flattened.setProtectedHeader(protectedHeader);
+		return this;
+	}
+	setKeyManagementParameters(parameters) {
+		this.#flattened.setKeyManagementParameters(parameters);
+		return this;
+	}
+	async encrypt(key, options) {
+		const jwe = await this.#flattened.encrypt(key, options);
+		return [
+			jwe.protected,
+			jwe.encrypted_key,
+			jwe.iv,
+			jwe.ciphertext,
+			jwe.tag
+		].join(".");
+	}
+};
+var FlattenedSign = class {
+	#payload;
+	#protectedHeader;
+	#unprotectedHeader;
+	constructor(payload) {
+		if (!(payload instanceof Uint8Array)) throw new TypeError("payload must be an instance of Uint8Array");
+		this.#payload = payload;
+	}
+	setProtectedHeader(protectedHeader) {
+		assertNotSet(this.#protectedHeader, "setProtectedHeader");
+		this.#protectedHeader = protectedHeader;
+		return this;
+	}
+	setUnprotectedHeader(unprotectedHeader) {
+		assertNotSet(this.#unprotectedHeader, "setUnprotectedHeader");
+		this.#unprotectedHeader = unprotectedHeader;
+		return this;
+	}
+	async sign(key, options) {
+		if (!this.#protectedHeader && !this.#unprotectedHeader) throw new JWSInvalid("either setProtectedHeader or setUnprotectedHeader must be called before #sign()");
+		if (!isDisjoint(this.#protectedHeader, this.#unprotectedHeader)) throw new JWSInvalid("JWS Protected and JWS Unprotected Header Parameter names must be disjoint");
+		const joseHeader = {
+			...this.#protectedHeader,
+			...this.#unprotectedHeader
+		};
+		const extensions = validateCrit(JWSInvalid, new Map([["b64", true]]), options?.crit, this.#protectedHeader, joseHeader);
+		let b64 = true;
+		if (extensions.has("b64")) {
+			b64 = this.#protectedHeader.b64;
+			if (typeof b64 !== "boolean") throw new JWSInvalid("The \"b64\" (base64url-encode payload) Header Parameter must be a boolean");
+		}
+		const { alg: alg$1 } = joseHeader;
+		if (typeof alg$1 !== "string" || !alg$1) throw new JWSInvalid("JWS \"alg\" (Algorithm) Header Parameter missing or invalid");
+		checkKeyType(alg$1, key, "sign");
+		let payloadS;
+		let payloadB;
+		if (b64) {
+			payloadS = encode$3(this.#payload);
+			payloadB = encode$4(payloadS);
+		} else {
+			payloadB = this.#payload;
+			payloadS = "";
+		}
+		let protectedHeaderString;
+		let protectedHeaderBytes;
+		if (this.#protectedHeader) {
+			protectedHeaderString = encode$3(JSON.stringify(this.#protectedHeader));
+			protectedHeaderBytes = encode$4(protectedHeaderString);
+		} else {
+			protectedHeaderString = "";
+			protectedHeaderBytes = new Uint8Array();
+		}
+		const data = concat$2(protectedHeaderBytes, encode$4("."), payloadB);
+		const jws = {
+			signature: encode$3(await sign(alg$1, await normalizeKey(key, alg$1), data)),
+			payload: payloadS
+		};
+		if (this.#unprotectedHeader) jws.header = this.#unprotectedHeader;
+		if (this.#protectedHeader) jws.protected = protectedHeaderString;
+		return jws;
+	}
+};
+var CompactSign = class {
+	#flattened;
+	constructor(payload) {
+		this.#flattened = new FlattenedSign(payload);
+	}
+	setProtectedHeader(protectedHeader) {
+		this.#flattened.setProtectedHeader(protectedHeader);
+		return this;
+	}
+	async sign(key, options) {
+		const jws = await this.#flattened.sign(key, options);
+		if (jws.payload === void 0) throw new TypeError("use the flattened module for creating JWS with b64: false");
+		return `${jws.protected}.${jws.payload}.${jws.signature}`;
+	}
+};
+var SignJWT = class {
+	#protectedHeader;
+	#jwt;
+	constructor(payload = {}) {
+		this.#jwt = new JWTClaimsBuilder(payload);
+	}
+	setIssuer(issuer) {
+		this.#jwt.iss = issuer;
+		return this;
+	}
+	setSubject(subject) {
+		this.#jwt.sub = subject;
+		return this;
+	}
+	setAudience(audience) {
+		this.#jwt.aud = audience;
+		return this;
+	}
+	setJti(jwtId) {
+		this.#jwt.jti = jwtId;
+		return this;
+	}
+	setNotBefore(input) {
+		this.#jwt.nbf = input;
+		return this;
+	}
+	setExpirationTime(input) {
+		this.#jwt.exp = input;
+		return this;
+	}
+	setIssuedAt(input) {
+		this.#jwt.iat = input;
+		return this;
+	}
+	setProtectedHeader(protectedHeader) {
+		this.#protectedHeader = protectedHeader;
+		return this;
+	}
+	async sign(key, options) {
+		const sig = new CompactSign(this.#jwt.data());
+		sig.setProtectedHeader(this.#protectedHeader);
+		if (Array.isArray(this.#protectedHeader?.crit) && this.#protectedHeader.crit.includes("b64") && this.#protectedHeader.b64 === false) throw new JWTInvalid("JWTs MUST NOT use unencoded payload");
+		return sig.sign(key, options);
+	}
+};
+var EncryptJWT = class {
+	#cek;
+	#iv;
+	#keyManagementParameters;
+	#protectedHeader;
+	#replicateIssuerAsHeader;
+	#replicateSubjectAsHeader;
+	#replicateAudienceAsHeader;
+	#jwt;
+	constructor(payload = {}) {
+		this.#jwt = new JWTClaimsBuilder(payload);
+	}
+	setIssuer(issuer) {
+		this.#jwt.iss = issuer;
+		return this;
+	}
+	setSubject(subject) {
+		this.#jwt.sub = subject;
+		return this;
+	}
+	setAudience(audience) {
+		this.#jwt.aud = audience;
+		return this;
+	}
+	setJti(jwtId) {
+		this.#jwt.jti = jwtId;
+		return this;
+	}
+	setNotBefore(input) {
+		this.#jwt.nbf = input;
+		return this;
+	}
+	setExpirationTime(input) {
+		this.#jwt.exp = input;
+		return this;
+	}
+	setIssuedAt(input) {
+		this.#jwt.iat = input;
+		return this;
+	}
+	setProtectedHeader(protectedHeader) {
+		assertNotSet(this.#protectedHeader, "setProtectedHeader");
+		this.#protectedHeader = protectedHeader;
+		return this;
+	}
+	setKeyManagementParameters(parameters) {
+		assertNotSet(this.#keyManagementParameters, "setKeyManagementParameters");
+		this.#keyManagementParameters = parameters;
+		return this;
+	}
+	setContentEncryptionKey(cek) {
+		assertNotSet(this.#cek, "setContentEncryptionKey");
+		this.#cek = cek;
+		return this;
+	}
+	setInitializationVector(iv) {
+		assertNotSet(this.#iv, "setInitializationVector");
+		this.#iv = iv;
+		return this;
+	}
+	replicateIssuerAsHeader() {
+		this.#replicateIssuerAsHeader = true;
+		return this;
+	}
+	replicateSubjectAsHeader() {
+		this.#replicateSubjectAsHeader = true;
+		return this;
+	}
+	replicateAudienceAsHeader() {
+		this.#replicateAudienceAsHeader = true;
+		return this;
+	}
+	async encrypt(key, options) {
+		const enc$1 = new CompactEncrypt(this.#jwt.data());
+		if (this.#protectedHeader && (this.#replicateIssuerAsHeader || this.#replicateSubjectAsHeader || this.#replicateAudienceAsHeader)) this.#protectedHeader = {
+			...this.#protectedHeader,
+			iss: this.#replicateIssuerAsHeader ? this.#jwt.iss : void 0,
+			sub: this.#replicateSubjectAsHeader ? this.#jwt.sub : void 0,
+			aud: this.#replicateAudienceAsHeader ? this.#jwt.aud : void 0
+		};
+		enc$1.setProtectedHeader(this.#protectedHeader);
+		if (this.#iv) enc$1.setInitializationVector(this.#iv);
+		if (this.#cek) enc$1.setContentEncryptionKey(this.#cek);
+		if (this.#keyManagementParameters) enc$1.setKeyManagementParameters(this.#keyManagementParameters);
+		return enc$1.encrypt(key, options);
+	}
+};
+var check$1 = (value, description) => {
+	if (typeof value !== "string" || !value) throw new JWKInvalid(`${description} missing or invalid`);
+};
+async function calculateJwkThumbprint(key, digestAlgorithm) {
+	let jwk;
+	if (isJWK(key)) jwk = key;
+	else if (isKeyLike(key)) jwk = await exportJWK(key);
+	else throw new TypeError(invalidKeyInput(key, "CryptoKey", "KeyObject", "JSON Web Key"));
+	digestAlgorithm ??= "sha256";
+	if (digestAlgorithm !== "sha256" && digestAlgorithm !== "sha384" && digestAlgorithm !== "sha512") throw new TypeError("digestAlgorithm must one of \"sha256\", \"sha384\", or \"sha512\"");
+	let components;
+	switch (jwk.kty) {
+		case "AKP":
+			check$1(jwk.alg, "\"alg\" (Algorithm) Parameter");
+			check$1(jwk.pub, "\"pub\" (Public key) Parameter");
+			components = {
+				alg: jwk.alg,
+				kty: jwk.kty,
+				pub: jwk.pub
+			};
+			break;
+		case "EC":
+			check$1(jwk.crv, "\"crv\" (Curve) Parameter");
+			check$1(jwk.x, "\"x\" (X Coordinate) Parameter");
+			check$1(jwk.y, "\"y\" (Y Coordinate) Parameter");
+			components = {
+				crv: jwk.crv,
+				kty: jwk.kty,
+				x: jwk.x,
+				y: jwk.y
+			};
+			break;
+		case "OKP":
+			check$1(jwk.crv, "\"crv\" (Subtype of Key Pair) Parameter");
+			check$1(jwk.x, "\"x\" (Public Key) Parameter");
+			components = {
+				crv: jwk.crv,
+				kty: jwk.kty,
+				x: jwk.x
+			};
+			break;
+		case "RSA":
+			check$1(jwk.e, "\"e\" (Exponent) Parameter");
+			check$1(jwk.n, "\"n\" (Modulus) Parameter");
+			components = {
+				e: jwk.e,
+				kty: jwk.kty,
+				n: jwk.n
+			};
+			break;
+		case "oct":
+			check$1(jwk.k, "\"k\" (Key Value) Parameter");
+			components = {
+				k: jwk.k,
+				kty: jwk.kty
+			};
+			break;
+		default: throw new JOSENotSupported("\"kty\" (Key Type) Parameter missing or unsupported");
+	}
+	const data = encode$4(JSON.stringify(components));
+	return encode$3(await digest(digestAlgorithm, data));
+}
+function getKtyFromAlg(alg$1) {
+	switch (typeof alg$1 === "string" && alg$1.slice(0, 2)) {
+		case "RS":
+		case "PS": return "RSA";
+		case "ES": return "EC";
+		case "Ed": return "OKP";
+		case "ML": return "AKP";
+		default: throw new JOSENotSupported("Unsupported \"alg\" value for a JSON Web Key Set");
+	}
+}
+function isJWKSLike(jwks) {
+	return jwks && typeof jwks === "object" && Array.isArray(jwks.keys) && jwks.keys.every(isJWKLike);
+}
+function isJWKLike(key) {
+	return isObject$1(key);
+}
+var LocalJWKSet = class {
+	#jwks;
+	#cached = /* @__PURE__ */ new WeakMap();
+	constructor(jwks) {
+		if (!isJWKSLike(jwks)) throw new JWKSInvalid("JSON Web Key Set malformed");
+		this.#jwks = structuredClone(jwks);
+	}
+	jwks() {
+		return this.#jwks;
+	}
+	async getKey(protectedHeader, token) {
+		const { alg: alg$1, kid } = {
+			...protectedHeader,
+			...token?.header
+		};
+		const kty = getKtyFromAlg(alg$1);
+		const candidates = this.#jwks.keys.filter((jwk$1) => {
+			let candidate = kty === jwk$1.kty;
+			if (candidate && typeof kid === "string") candidate = kid === jwk$1.kid;
+			if (candidate && (typeof jwk$1.alg === "string" || kty === "AKP")) candidate = alg$1 === jwk$1.alg;
+			if (candidate && typeof jwk$1.use === "string") candidate = jwk$1.use === "sig";
+			if (candidate && Array.isArray(jwk$1.key_ops)) candidate = jwk$1.key_ops.includes("verify");
+			if (candidate) switch (alg$1) {
+				case "ES256":
+					candidate = jwk$1.crv === "P-256";
+					break;
+				case "ES384":
+					candidate = jwk$1.crv === "P-384";
+					break;
+				case "ES512":
+					candidate = jwk$1.crv === "P-521";
+					break;
+				case "Ed25519":
+				case "EdDSA":
+					candidate = jwk$1.crv === "Ed25519";
+					break;
+			}
+			return candidate;
+		});
+		const { 0: jwk, length } = candidates;
+		if (length === 0) throw new JWKSNoMatchingKey();
+		if (length !== 1) {
+			const error$51 = new JWKSMultipleMatchingKeys();
+			const _cached = this.#cached;
+			error$51[Symbol.asyncIterator] = async function* () {
+				for (const jwk$1 of candidates) try {
+					yield await importWithAlgCache(_cached, jwk$1, alg$1);
+				} catch {}
+			};
+			throw error$51;
+		}
+		return importWithAlgCache(this.#cached, jwk, alg$1);
+	}
+};
+async function importWithAlgCache(cache$2, jwk, alg$1) {
+	const cached$1 = cache$2.get(jwk) || cache$2.set(jwk, {}).get(jwk);
+	if (cached$1[alg$1] === void 0) {
+		const key = await importJWK({
+			...jwk,
+			ext: true
+		}, alg$1);
+		if (key instanceof Uint8Array || key.type !== "public") throw new JWKSInvalid("JSON Web Key Set members must be public keys");
+		cached$1[alg$1] = key;
+	}
+	return cached$1[alg$1];
+}
+function createLocalJWKSet(jwks) {
+	const set$1 = new LocalJWKSet(jwks);
+	const localJWKSet = async (protectedHeader, token) => set$1.getKey(protectedHeader, token);
+	Object.defineProperties(localJWKSet, { jwks: {
+		value: () => structuredClone(set$1.jwks()),
+		enumerable: false,
+		configurable: false,
+		writable: false
+	} });
+	return localJWKSet;
+}
+function isCloudflareWorkers() {
+	return typeof WebSocketPair !== "undefined" || typeof navigator !== "undefined" && navigator.userAgent === "Cloudflare-Workers" || typeof EdgeRuntime !== "undefined" && EdgeRuntime === "vercel";
+}
+var USER_AGENT;
+if (typeof navigator === "undefined" || !navigator.userAgent?.startsWith?.("Mozilla/5.0 ")) USER_AGENT = `jose/v6.2.3`;
+const customFetch = Symbol();
+async function fetchJwks(url$1, headers, signal, fetchImpl = fetch) {
+	const response = await fetchImpl(url$1, {
+		method: "GET",
+		signal,
+		redirect: "manual",
+		headers
+	}).catch((err) => {
+		if (err.name === "TimeoutError") throw new JWKSTimeout();
+		throw err;
+	});
+	if (response.status !== 200) throw new JOSEError("Expected 200 OK from the JSON Web Key Set HTTP response");
+	try {
+		return await response.json();
+	} catch {
+		throw new JOSEError("Failed to parse the JSON Web Key Set HTTP response as JSON");
+	}
+}
+const jwksCache = Symbol();
+function isFreshJwksCache(input, cacheMaxAge) {
+	if (typeof input !== "object" || input === null) return false;
+	if (!("uat" in input) || typeof input.uat !== "number" || Date.now() - input.uat >= cacheMaxAge) return false;
+	if (!("jwks" in input) || !isObject$1(input.jwks) || !Array.isArray(input.jwks.keys) || !Array.prototype.every.call(input.jwks.keys, isObject$1)) return false;
+	return true;
+}
+var RemoteJWKSet = class {
+	#url;
+	#timeoutDuration;
+	#cooldownDuration;
+	#cacheMaxAge;
+	#jwksTimestamp;
+	#pendingFetch;
+	#headers;
+	#customFetch;
+	#local;
+	#cache;
+	constructor(url$1, options) {
+		if (!(url$1 instanceof URL)) throw new TypeError("url must be an instance of URL");
+		this.#url = new URL(url$1.href);
+		this.#timeoutDuration = typeof options?.timeoutDuration === "number" ? options?.timeoutDuration : 5e3;
+		this.#cooldownDuration = typeof options?.cooldownDuration === "number" ? options?.cooldownDuration : 3e4;
+		this.#cacheMaxAge = typeof options?.cacheMaxAge === "number" ? options?.cacheMaxAge : 6e5;
+		this.#headers = new Headers(options?.headers);
+		if (USER_AGENT && !this.#headers.has("User-Agent")) this.#headers.set("User-Agent", USER_AGENT);
+		if (!this.#headers.has("accept")) {
+			this.#headers.set("accept", "application/json");
+			this.#headers.append("accept", "application/jwk-set+json");
+		}
+		this.#customFetch = options?.[customFetch];
+		if (options?.[jwksCache] !== void 0) {
+			this.#cache = options?.[jwksCache];
+			if (isFreshJwksCache(options?.[jwksCache], this.#cacheMaxAge)) {
+				this.#jwksTimestamp = this.#cache.uat;
+				this.#local = createLocalJWKSet(this.#cache.jwks);
+			}
+		}
+	}
+	pendingFetch() {
+		return !!this.#pendingFetch;
+	}
+	coolingDown() {
+		return typeof this.#jwksTimestamp === "number" ? Date.now() < this.#jwksTimestamp + this.#cooldownDuration : false;
+	}
+	fresh() {
+		return typeof this.#jwksTimestamp === "number" ? Date.now() < this.#jwksTimestamp + this.#cacheMaxAge : false;
+	}
+	jwks() {
+		return this.#local?.jwks();
+	}
+	async getKey(protectedHeader, token) {
+		if (!this.#local || !this.fresh()) await this.reload();
+		try {
+			return await this.#local(protectedHeader, token);
+		} catch (err) {
+			if (err instanceof JWKSNoMatchingKey) {
+				if (this.coolingDown() === false) {
+					await this.reload();
+					return this.#local(protectedHeader, token);
+				}
+			}
+			throw err;
+		}
+	}
+	async reload() {
+		if (this.#pendingFetch && isCloudflareWorkers()) this.#pendingFetch = void 0;
+		this.#pendingFetch ||= fetchJwks(this.#url.href, this.#headers, AbortSignal.timeout(this.#timeoutDuration), this.#customFetch).then((json$1) => {
+			this.#local = createLocalJWKSet(json$1);
+			if (this.#cache) {
+				this.#cache.uat = Date.now();
+				this.#cache.jwks = json$1;
+			}
+			this.#jwksTimestamp = Date.now();
+			this.#pendingFetch = void 0;
+		}).catch((err) => {
+			this.#pendingFetch = void 0;
+			throw err;
+		});
+		await this.#pendingFetch;
+	}
+};
+function createRemoteJWKSet(url$1, options) {
+	const set$1 = new RemoteJWKSet(url$1, options);
+	const remoteJWKSet = async (protectedHeader, token) => set$1.getKey(protectedHeader, token);
+	Object.defineProperties(remoteJWKSet, {
+		coolingDown: {
+			get: () => set$1.coolingDown(),
+			enumerable: true,
+			configurable: false
+		},
+		fresh: {
+			get: () => set$1.fresh(),
+			enumerable: true,
+			configurable: false
+		},
+		reload: {
+			value: () => set$1.reload(),
+			enumerable: true,
+			configurable: false,
+			writable: false
+		},
+		reloading: {
+			get: () => set$1.pendingFetch(),
+			enumerable: true,
+			configurable: false
+		},
+		jwks: {
+			value: () => set$1.jwks(),
+			enumerable: true,
+			configurable: false,
+			writable: false
+		}
+	});
+	return remoteJWKSet;
+}
+function decodeProtectedHeader(token) {
+	let protectedB64u;
+	if (typeof token === "string") {
+		const parts = token.split(".");
+		if (parts.length === 3 || parts.length === 5) [protectedB64u] = parts;
+	} else if (typeof token === "object" && token) if ("protected" in token) protectedB64u = token.protected;
+	else throw new TypeError("Token does not contain a Protected Header");
+	try {
+		if (typeof protectedB64u !== "string" || !protectedB64u) throw new Error();
+		const result = JSON.parse(decoder.decode(decode$3(protectedB64u)));
+		if (!isObject$1(result)) throw new Error();
+		return result;
+	} catch {
+		throw new TypeError("Invalid Token or Protected Header formatting");
+	}
+}
+function decodeJwt(jwt$1) {
+	if (typeof jwt$1 !== "string") throw new JWTInvalid("JWTs must use Compact JWS serialization, JWT must be a string");
+	const { 1: payload, length } = jwt$1.split(".");
+	if (length === 5) throw new JWTInvalid("Only JWTs using Compact JWS serialization can be decoded");
+	if (length !== 3) throw new JWTInvalid("Invalid JWT");
+	if (!payload) throw new JWTInvalid("JWTs must contain a payload");
+	let decoded;
+	try {
+		decoded = decode$3(payload);
+	} catch {
+		throw new JWTInvalid("Failed to base64url decode the payload");
+	}
+	let result;
+	try {
+		result = JSON.parse(decoder.decode(decoded));
+	} catch {
+		throw new JWTInvalid("Failed to parse the decoded payload as JSON");
+	}
+	if (!isObject$1(result)) throw new JWTInvalid("Invalid JWT Claims Set");
+	return result;
+}
+async function signJWT(payload, secret, expiresIn = 3600) {
+	return await new SignJWT(payload).setProtectedHeader({ alg: "HS256" }).setIssuedAt().setExpirationTime(Math.floor(Date.now() / 1e3) + expiresIn).sign(new TextEncoder().encode(secret));
+}
+async function verifyJWT(token, secret) {
+	try {
+		return (await jwtVerify(token, new TextEncoder().encode(secret))).payload;
+	} catch {
+		return null;
+	}
+}
+var info = new Uint8Array([
+	66,
+	101,
+	116,
+	116,
+	101,
+	114,
+	65,
+	117,
+	116,
+	104,
+	46,
+	106,
+	115,
+	32,
+	71,
+	101,
+	110,
+	101,
+	114,
+	97,
+	116,
+	101,
+	100,
+	32,
+	69,
+	110,
+	99,
+	114,
+	121,
+	112,
+	116,
+	105,
+	111,
+	110,
+	32,
+	75,
+	101,
+	121
+]);
+var now = () => Date.now() / 1e3 | 0;
+var alg = "dir";
+var enc = "A256CBC-HS512";
+function deriveEncryptionSecret(secret, salt) {
+	return hkdf(sha256, new TextEncoder().encode(secret), new TextEncoder().encode(salt), info, 64);
+}
+function getCurrentSecret(secret) {
+	if (typeof secret === "string") return secret;
+	const value = secret.keys.get(secret.currentVersion);
+	if (!value) throw new Error(`Secret version ${secret.currentVersion} not found in keys`);
+	return value;
+}
+function getAllSecrets(secret) {
+	if (typeof secret === "string") return [{
+		version: 0,
+		value: secret
+	}];
+	const result = [];
+	for (const [version$3, value] of secret.keys) result.push({
+		version: version$3,
+		value
+	});
+	if (secret.legacySecret && !result.some((s) => s.value === secret.legacySecret)) result.push({
+		version: -1,
+		value: secret.legacySecret
+	});
+	return result;
+}
+async function symmetricEncodeJWT(payload, secret, salt, expiresIn = 3600) {
+	const encryptionSecret = deriveEncryptionSecret(getCurrentSecret(secret), salt);
+	const thumbprint = await calculateJwkThumbprint({
+		kty: "oct",
+		k: encode$3(encryptionSecret)
+	}, "sha256");
+	return await new EncryptJWT(payload).setProtectedHeader({
+		alg,
+		enc,
+		kid: thumbprint
+	}).setIssuedAt().setExpirationTime(now() + expiresIn).setJti(crypto.randomUUID()).encrypt(encryptionSecret);
+}
+var jwtDecryptOpts = {
+	clockTolerance: 15,
+	keyManagementAlgorithms: [alg],
+	contentEncryptionAlgorithms: [enc, "A256GCM"]
+};
+async function symmetricDecodeJWT(token, secret, salt) {
+	if (!token) return null;
+	let hasKid = false;
+	try {
+		hasKid = decodeProtectedHeader(token).kid !== void 0;
+	} catch {
+		return null;
+	}
+	try {
+		const secrets = getAllSecrets(secret);
+		const { payload } = await jwtDecrypt(token, async (protectedHeader) => {
+			const kid = protectedHeader.kid;
+			if (kid !== void 0) {
+				for (const s of secrets) {
+					const encryptionSecret = deriveEncryptionSecret(s.value, salt);
+					if (kid === await calculateJwkThumbprint({
+						kty: "oct",
+						k: encode$3(encryptionSecret)
+					}, "sha256")) return encryptionSecret;
+				}
+				throw new Error("no matching decryption secret");
+			}
+			if (secrets.length === 1) return deriveEncryptionSecret(secrets[0].value, salt);
+			return deriveEncryptionSecret(secrets[0].value, salt);
+		}, jwtDecryptOpts);
+		return payload;
+	} catch {
+		if (hasKid) return null;
+		const secrets = getAllSecrets(secret);
+		if (secrets.length <= 1) return null;
+		for (let i = 1; i < secrets.length; i++) try {
+			const s = secrets[i];
+			const { payload } = await jwtDecrypt(token, deriveEncryptionSecret(s.value, salt), jwtDecryptOpts);
+			return payload;
+		} catch {
+			continue;
+		}
+		return null;
+	}
+}
+var getAuthTables = (options) => {
+	const pluginSchema = (options.plugins ?? []).reduce((acc, plugin) => {
+		const schema$1 = plugin.schema;
+		if (!schema$1) return acc;
+		for (const [key, value] of Object.entries(schema$1)) acc[key] = {
+			fields: {
+				...acc[key]?.fields,
+				...value.fields
+			},
+			modelName: value.modelName || key
+		};
+		return acc;
+	}, {});
+	const shouldAddRateLimitTable = options.rateLimit?.storage === "database";
+	const rateLimitTable = { rateLimit: {
+		modelName: options.rateLimit?.modelName || "rateLimit",
+		fields: {
+			key: {
+				type: "string",
+				unique: true,
+				required: true,
+				fieldName: options.rateLimit?.fields?.key || "key"
+			},
+			count: {
+				type: "number",
+				required: true,
+				fieldName: options.rateLimit?.fields?.count || "count"
+			},
+			lastRequest: {
+				type: "number",
+				bigint: true,
+				required: true,
+				fieldName: options.rateLimit?.fields?.lastRequest || "lastRequest",
+				defaultValue: () => Date.now()
+			}
+		}
+	} };
+	const { user: user$1, session: session$1, account: account$1, verification: verification$1, ...pluginTables } = pluginSchema;
+	const verificationTable = { verification: {
+		modelName: options.verification?.modelName || "verification",
+		fields: {
+			identifier: {
+				type: "string",
+				required: true,
+				fieldName: options.verification?.fields?.identifier || "identifier",
+				index: true
+			},
+			value: {
+				type: "string",
+				required: true,
+				fieldName: options.verification?.fields?.value || "value"
+			},
+			expiresAt: {
+				type: "date",
+				required: true,
+				fieldName: options.verification?.fields?.expiresAt || "expiresAt"
+			},
+			createdAt: {
+				type: "date",
+				required: true,
+				defaultValue: () => /* @__PURE__ */ new Date(),
+				fieldName: options.verification?.fields?.createdAt || "createdAt"
+			},
+			updatedAt: {
+				type: "date",
+				required: true,
+				defaultValue: () => /* @__PURE__ */ new Date(),
+				onUpdate: () => /* @__PURE__ */ new Date(),
+				fieldName: options.verification?.fields?.updatedAt || "updatedAt"
+			},
+			...verification$1?.fields,
+			...options.verification?.additionalFields
+		},
+		order: 4
+	} };
+	const sessionTable = { session: {
+		modelName: options.session?.modelName || "session",
+		fields: {
+			expiresAt: {
+				type: "date",
+				required: true,
+				fieldName: options.session?.fields?.expiresAt || "expiresAt"
+			},
+			token: {
+				type: "string",
+				required: true,
+				fieldName: options.session?.fields?.token || "token",
+				unique: true
+			},
+			createdAt: {
+				type: "date",
+				required: true,
+				fieldName: options.session?.fields?.createdAt || "createdAt",
+				defaultValue: () => /* @__PURE__ */ new Date()
+			},
+			updatedAt: {
+				type: "date",
+				required: true,
+				fieldName: options.session?.fields?.updatedAt || "updatedAt",
+				onUpdate: () => /* @__PURE__ */ new Date()
+			},
+			ipAddress: {
+				type: "string",
+				required: false,
+				fieldName: options.session?.fields?.ipAddress || "ipAddress"
+			},
+			userAgent: {
+				type: "string",
+				required: false,
+				fieldName: options.session?.fields?.userAgent || "userAgent"
+			},
+			userId: {
+				type: "string",
+				fieldName: options.session?.fields?.userId || "userId",
+				references: {
+					model: options.user?.modelName || "user",
+					field: "id",
+					onDelete: "cascade"
+				},
+				required: true,
+				index: true
+			},
+			...session$1?.fields,
+			...options.session?.additionalFields
+		},
+		order: 2
+	} };
+	return {
+		user: {
+			modelName: options.user?.modelName || "user",
+			fields: {
+				name: {
+					type: "string",
+					required: true,
+					fieldName: options.user?.fields?.name || "name",
+					sortable: true
+				},
+				email: {
+					type: "string",
+					unique: true,
+					required: true,
+					fieldName: options.user?.fields?.email || "email",
+					sortable: true
+				},
+				emailVerified: {
+					type: "boolean",
+					defaultValue: false,
+					required: true,
+					fieldName: options.user?.fields?.emailVerified || "emailVerified",
+					input: false
+				},
+				image: {
+					type: "string",
+					required: false,
+					fieldName: options.user?.fields?.image || "image"
+				},
+				createdAt: {
+					type: "date",
+					defaultValue: () => /* @__PURE__ */ new Date(),
+					required: true,
+					fieldName: options.user?.fields?.createdAt || "createdAt"
+				},
+				updatedAt: {
+					type: "date",
+					defaultValue: () => /* @__PURE__ */ new Date(),
+					onUpdate: () => /* @__PURE__ */ new Date(),
+					required: true,
+					fieldName: options.user?.fields?.updatedAt || "updatedAt"
+				},
+				...user$1?.fields,
+				...options.user?.additionalFields
+			},
+			order: 1
+		},
+		...!options.secondaryStorage || options.session?.storeSessionInDatabase ? sessionTable : {},
+		account: {
+			modelName: options.account?.modelName || "account",
+			fields: {
+				accountId: {
+					type: "string",
+					required: true,
+					fieldName: options.account?.fields?.accountId || "accountId"
+				},
+				providerId: {
+					type: "string",
+					required: true,
+					fieldName: options.account?.fields?.providerId || "providerId"
+				},
+				userId: {
+					type: "string",
+					references: {
+						model: options.user?.modelName || "user",
+						field: "id",
+						onDelete: "cascade"
+					},
+					required: true,
+					fieldName: options.account?.fields?.userId || "userId",
+					index: true
+				},
+				accessToken: {
+					type: "string",
+					required: false,
+					returned: false,
+					fieldName: options.account?.fields?.accessToken || "accessToken"
+				},
+				refreshToken: {
+					type: "string",
+					required: false,
+					returned: false,
+					fieldName: options.account?.fields?.refreshToken || "refreshToken"
+				},
+				idToken: {
+					type: "string",
+					required: false,
+					returned: false,
+					fieldName: options.account?.fields?.idToken || "idToken"
+				},
+				accessTokenExpiresAt: {
+					type: "date",
+					required: false,
+					returned: false,
+					fieldName: options.account?.fields?.accessTokenExpiresAt || "accessTokenExpiresAt"
+				},
+				refreshTokenExpiresAt: {
+					type: "date",
+					required: false,
+					returned: false,
+					fieldName: options.account?.fields?.refreshTokenExpiresAt || "refreshTokenExpiresAt"
+				},
+				scope: {
+					type: "string",
+					required: false,
+					fieldName: options.account?.fields?.scope || "scope"
+				},
+				password: {
+					type: "string",
+					required: false,
+					returned: false,
+					fieldName: options.account?.fields?.password || "password"
+				},
+				createdAt: {
+					type: "date",
+					required: true,
+					fieldName: options.account?.fields?.createdAt || "createdAt",
+					defaultValue: () => /* @__PURE__ */ new Date()
+				},
+				updatedAt: {
+					type: "date",
+					required: true,
+					fieldName: options.account?.fields?.updatedAt || "updatedAt",
+					onUpdate: () => /* @__PURE__ */ new Date()
+				},
+				...account$1?.fields,
+				...options.account?.additionalFields
+			},
+			order: 3
+		},
+		...!options.secondaryStorage || options.verification?.storeInDatabase ? verificationTable : {},
+		...pluginTables,
+		...shouldAddRateLimitTable ? rateLimitTable : {}
+	};
+};
 var _a$1;
 const NEVER = /* @__PURE__ */ Object.freeze({ status: "aborted" });
 function $constructor(name, initializer$2, params) {
@@ -1462,7 +6642,7 @@ var util_exports = /* @__PURE__ */ __export({
 	getParsedType: () => getParsedType,
 	getSizableOrigin: () => getSizableOrigin,
 	hexToUint8Array: () => hexToUint8Array,
-	isObject: () => isObject$1,
+	isObject: () => isObject,
 	isPlainObject: () => isPlainObject$1,
 	issue: () => issue,
 	joinValues: () => joinValues,
@@ -1606,7 +6786,7 @@ function slugify(input) {
 	return input.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
 }
 const captureStackTrace = "captureStackTrace" in Error ? Error.captureStackTrace : (..._args) => {};
-function isObject$1(data) {
+function isObject(data) {
 	return typeof data === "object" && data !== null && !Array.isArray(data);
 }
 const allowsEval = /* @__PURE__ */ cached(() => {
@@ -1620,12 +6800,12 @@ const allowsEval = /* @__PURE__ */ cached(() => {
 	}
 });
 function isPlainObject$1(o) {
-	if (isObject$1(o) === false) return false;
+	if (isObject(o) === false) return false;
 	const ctor = o.constructor;
 	if (ctor === void 0) return true;
 	if (typeof ctor !== "function") return true;
 	const prot = ctor.prototype;
-	if (isObject$1(prot) === false) return false;
+	if (isObject(prot) === false) return false;
 	if (Object.prototype.hasOwnProperty.call(prot, "isPrototypeOf") === false) return false;
 	return true;
 }
@@ -2172,11 +7352,11 @@ const _encode$1 = (_Err) => (schema$1, value, _ctx) => {
 	} : { direction: "backward" };
 	return _parse(_Err)(schema$1, value, ctx);
 };
-const encode$4 = /* @__PURE__ */ _encode$1($ZodRealError);
+const encode$2 = /* @__PURE__ */ _encode$1($ZodRealError);
 const _decode$1 = (_Err) => (schema$1, value, _ctx) => {
 	return _parse(_Err)(schema$1, value, _ctx);
 };
-const decode$3 = /* @__PURE__ */ _decode$1($ZodRealError);
+const decode$2 = /* @__PURE__ */ _decode$1($ZodRealError);
 const _encodeAsync = (_Err) => async (schema$1, value, _ctx) => {
 	const ctx = _ctx ? {
 		..._ctx,
@@ -3565,7 +8745,7 @@ const $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
 		}
 		return propValues;
 	});
-	const isObject$2 = isObject$1;
+	const isObject$2 = isObject;
 	const catchall = def.catchall;
 	let value;
 	inst._zod.parse = (payload, ctx) => {
@@ -3694,7 +8874,7 @@ const $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) 
 		return (payload, ctx) => fn(shape, payload, ctx);
 	};
 	let fastpass;
-	const isObject$2 = isObject$1;
+	const isObject$2 = isObject;
 	const jit = !globalConfig.jitless;
 	const fastEnabled = jit && allowsEval.value;
 	const catchall = def.catchall;
@@ -3851,7 +9031,7 @@ const $ZodDiscriminatedUnion = /* @__PURE__ */ $constructor("$ZodDiscriminatedUn
 	});
 	inst._zod.parse = (payload, ctx) => {
 		const input = payload.value;
-		if (!isObject$1(input)) {
+		if (!isObject(input)) {
 			payload.issues.push({
 				code: "invalid_type",
 				expected: "object",
@@ -12417,10 +17597,10 @@ var core_exports = /* @__PURE__ */ __export({
 	config: () => config$1,
 	createStandardJSONSchemaMethod: () => createStandardJSONSchemaMethod,
 	createToJSONSchemaMethod: () => createToJSONSchemaMethod,
-	decode: () => decode$3,
+	decode: () => decode$2,
 	decodeAsync: () => decodeAsync$1,
 	describe: () => describe$1,
-	encode: () => encode$4,
+	encode: () => encode$2,
 	encodeAsync: () => encodeAsync$1,
 	extractDefs: () => extractDefs,
 	finalize: () => finalize,
@@ -12546,8 +17726,8 @@ const parse$4 = /* @__PURE__ */ _parse(ZodRealError);
 const parseAsync = /* @__PURE__ */ _parseAsync(ZodRealError);
 const safeParse = /* @__PURE__ */ _safeParse(ZodRealError);
 const safeParseAsync = /* @__PURE__ */ _safeParseAsync(ZodRealError);
-const encode$3 = /* @__PURE__ */ _encode$1(ZodRealError);
-const decode$2 = /* @__PURE__ */ _decode$1(ZodRealError);
+const encode$1 = /* @__PURE__ */ _encode$1(ZodRealError);
+const decode$1 = /* @__PURE__ */ _decode$1(ZodRealError);
 const encodeAsync = /* @__PURE__ */ _encodeAsync(ZodRealError);
 const decodeAsync = /* @__PURE__ */ _decodeAsync(ZodRealError);
 const safeEncode = /* @__PURE__ */ _safeEncode(ZodRealError);
@@ -12634,7 +17814,7 @@ var schemas_exports = /* @__PURE__ */ __export({
 	bigint: () => bigint$1,
 	boolean: () => boolean$2,
 	catch: () => _catch,
-	check: () => check$1,
+	check: () => check,
 	cidrv4: () => cidrv4,
 	cidrv6: () => cidrv6,
 	codec: () => codec,
@@ -12705,7 +17885,7 @@ var schemas_exports = /* @__PURE__ */ __export({
 	superRefine: () => superRefine,
 	symbol: () => symbol$1,
 	templateLiteral: () => templateLiteral,
-	transform: () => transform$1,
+	transform: () => transform,
 	tuple: () => tuple,
 	uint32: () => uint32,
 	uint64: () => uint64,
@@ -12773,8 +17953,8 @@ const ZodType = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
 	inst.parseAsync = async (data, params) => parseAsync(inst, data, params, { callee: inst.parseAsync });
 	inst.safeParseAsync = async (data, params) => safeParseAsync(inst, data, params);
 	inst.spa = inst.safeParseAsync;
-	inst.encode = (data, params) => encode$3(inst, data, params);
-	inst.decode = (data, params) => decode$2(inst, data, params);
+	inst.encode = (data, params) => encode$1(inst, data, params);
+	inst.decode = (data, params) => decode$1(inst, data, params);
 	inst.encodeAsync = async (data, params) => encodeAsync(inst, data, params);
 	inst.decodeAsync = async (data, params) => decodeAsync(inst, data, params);
 	inst.safeEncode = (data, params) => safeEncode(inst, data, params);
@@ -12837,7 +18017,7 @@ const ZodType = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
 			return intersection(this, arg);
 		},
 		transform(tx) {
-			return pipe(this, transform$1(tx));
+			return pipe(this, transform(tx));
 		},
 		default(d) {
 			return _default(this, d);
@@ -13705,7 +18885,7 @@ const ZodTransform = /* @__PURE__ */ $constructor("ZodTransform", (inst, def) =>
 		return payload;
 	};
 });
-function transform$1(fn) {
+function transform(fn) {
 	return new ZodTransform({
 		type: "transform",
 		transform: fn
@@ -13934,7 +19114,7 @@ const ZodCustom = /* @__PURE__ */ $constructor("ZodCustom", (inst, def) => {
 	ZodType.init(inst, def);
 	inst._zod.processJSONSchema = (ctx, json$1, params) => customProcessor(inst, ctx, json$1, params);
 });
-function check$1(fn) {
+function check(fn) {
 	const ch = new $ZodCheck({ check: "custom" });
 	ch._zod.check = fn;
 	return ch;
@@ -13991,7 +19171,7 @@ function json(params) {
 function preprocess(fn, schema$1) {
 	return new ZodPreprocess({
 		type: "pipe",
-		in: transform$1(fn),
+		in: transform(fn),
 		out: schema$1
 	});
 }
@@ -14458,7 +19638,7 @@ var external_exports = /* @__PURE__ */ __export({
 	bigint: () => bigint$1,
 	boolean: () => boolean$2,
 	catch: () => _catch,
-	check: () => check$1,
+	check: () => check,
 	cidrv4: () => cidrv4,
 	cidrv6: () => cidrv6,
 	clone: () => clone,
@@ -14470,14 +19650,14 @@ var external_exports = /* @__PURE__ */ __export({
 	cuid2: () => cuid2,
 	custom: () => custom,
 	date: () => date$1,
-	decode: () => decode$2,
+	decode: () => decode$1,
 	decodeAsync: () => decodeAsync,
 	describe: () => describe,
 	discriminatedUnion: () => discriminatedUnion,
 	e164: () => e164,
 	email: () => email,
 	emoji: () => emoji,
-	encode: () => encode$3,
+	encode: () => encode$1,
 	encodeAsync: () => encodeAsync,
 	endsWith: () => _endsWith,
 	enum: () => _enum,
@@ -14584,7 +19764,7 @@ var external_exports = /* @__PURE__ */ __export({
 	toJSONSchema: () => toJSONSchema,
 	toLowerCase: () => _toLowerCase,
 	toUpperCase: () => _toUpperCase,
-	transform: () => transform$1,
+	transform: () => transform,
 	treeifyError: () => treeifyError,
 	trim: () => _trim,
 	tuple: () => tuple,
@@ -14699,7 +19879,7 @@ var zod_exports = /* @__PURE__ */ __export({
 	bigint: () => bigint$1,
 	boolean: () => boolean$2,
 	catch: () => _catch,
-	check: () => check$1,
+	check: () => check,
 	cidrv4: () => cidrv4,
 	cidrv6: () => cidrv6,
 	clone: () => clone,
@@ -14711,7 +19891,7 @@ var zod_exports = /* @__PURE__ */ __export({
 	cuid2: () => cuid2,
 	custom: () => custom,
 	date: () => date$1,
-	decode: () => decode$2,
+	decode: () => decode$1,
 	decodeAsync: () => decodeAsync,
 	default: () => zod_default,
 	describe: () => describe,
@@ -14719,7 +19899,7 @@ var zod_exports = /* @__PURE__ */ __export({
 	e164: () => e164,
 	email: () => email,
 	emoji: () => emoji,
-	encode: () => encode$3,
+	encode: () => encode$1,
 	encodeAsync: () => encodeAsync,
 	endsWith: () => _endsWith,
 	enum: () => _enum,
@@ -14826,7 +20006,7 @@ var zod_exports = /* @__PURE__ */ __export({
 	toJSONSchema: () => toJSONSchema,
 	toLowerCase: () => _toLowerCase,
 	toUpperCase: () => _toUpperCase,
-	transform: () => transform$1,
+	transform: () => transform,
 	treeifyError: () => treeifyError,
 	trim: () => _trim,
 	tuple: () => tuple,
@@ -14849,4039 +20029,6 @@ var zod_exports = /* @__PURE__ */ __export({
 	z: () => external_exports
 }, 1);
 var zod_default = external_exports;
-function apiSuccess(data) {
-	return {
-		ok: true,
-		data
-	};
-}
-function apiFailure(code, message$1) {
-	return {
-		ok: false,
-		error: {
-			code,
-			message: message$1
-		}
-	};
-}
-const publicRoute = async (_c, next) => {
-	await next();
-};
-const protectedRoute = async (c, next) => {
-	const user$1 = c.var.user;
-	if (!user$1) return c.json(apiFailure("UNAUTHORIZED", "Unauthorized"), 401);
-	c.set("currentUser", user$1);
-	await next();
-};
-const adminRoute = async (c, next) => {
-	const user$1 = c.var.user;
-	if (!user$1) return c.json(apiFailure("UNAUTHORIZED", "Unauthorized"), 401);
-	if (user$1.role !== "admin") return c.json(apiFailure("FORBIDDEN", "Forbidden"), 403);
-	c.set("currentUser", user$1);
-	await next();
-};
-var viteEnv = {
-	"BASE_URL": "/",
-	"DEV": false,
-	"MODE": "production",
-	"PROD": true,
-	"SSR": true
-};
-var DEV_BETTER_AUTH_SECRET = "dev-only-better-auth-secret-change-before-production";
-var FALLBACK_BETTER_AUTH_SECRET = "coding-agent-web-template-fallback-secret-change-in-production";
-function readEnv(...values) {
-	return values.find((value) => value !== void 0 && value.trim() !== "");
-}
-var nodeEnv = process.env.NODE_ENV ?? "development";
-var cliPort = readCliPort(process.argv);
-var betterAuthSecret = readEnv(process.env.BETTER_AUTH_SECRET) ?? (nodeEnv === "production" ? FALLBACK_BETTER_AUTH_SECRET : DEV_BETTER_AUTH_SECRET);
-var allowedOrigins = readEnv(process.env.ALLOWED_ORIGINS) ?? "http://localhost:3100";
-const env = {
-	NODE_ENV: nodeEnv,
-	PORT: Number(cliPort ?? process.env.PORT ?? 9901),
-	SKY_FC_SERVER_PORT: Number(readEnv(process.env.SKY_FC_SERVER_PORT, process.env.PORT) ?? 3e3),
-	ALLOWED_ORIGINS: allowedOrigins.split(",").map((origin) => origin.trim()).filter(Boolean),
-	BETTER_AUTH_URL: readEnv(process.env.BETTER_AUTH_URL) ?? "http://localhost:3100/api/auth",
-	BETTER_AUTH_SECRET: betterAuthSecret,
-	PUBLIC_BACKEND_URL: readEnv(process.env.PUBLIC_BACKEND_URL) ?? "",
-	SKYBASE_DB_ENDPOINT: readEnv(process.env.SKYBASE_DB_ENDPOINT) ?? "",
-	SKYBASE_DB_TOKEN: readEnv(process.env.SKYBASE_DB_AUTH_TOKEN, process.env.SKYBASE_DB_TOKEN) ?? "",
-	SKYBASE_DB_NAMESPACE: readEnv(process.env.SKYBASE_DB_NAMESPACE) ?? "",
-	SKYWORK_GATEWAY_BASE_URL: readEnv(process.env.SKYWORK_GATEWAY_BASE_URL) ?? "https://api-inn.skywork.ai/gateway",
-	SKYWORK_API_TOKEN: readEnv(process.env.SKYWORK_API_TOKEN) ?? "",
-	SKYWORK_AI_BASE_URL: readEnv(process.env.SKYWORK_AI_BASE_URL) ?? "https://api.skywork.ai/skycowork-llm/",
-	GOOGLE_CLIENT_ID: readEnv(process.env.GOOGLE_CLIENT_ID, process.env.VITE_GOOGLE_CLIENT_ID, viteEnv.VITE_GOOGLE_CLIENT_ID) ?? "",
-	GOOGLE_CLIENT_SECRET: readEnv(process.env.GOOGLE_CLIENT_SECRET) ?? ""
-};
-function readCliPort(argv) {
-	for (let index$1 = 0; index$1 < argv.length; index$1 += 1) {
-		const arg = argv[index$1];
-		if ((arg === "-p" || arg === "--port") && argv[index$1 + 1]) return argv[index$1 + 1];
-		if (arg.startsWith("--port=")) return arg.slice(7);
-	}
-}
-var CHAT_COMPLETIONS_PATH = "/skycowork_llm/v1/proxy/chat/completions";
-var REQUEST_TIMEOUT_MS = 3e4;
-var PlatformAIError = class extends Error {
-	constructor(code, message$1, status) {
-		super(message$1);
-		this.code = code;
-		this.status = status;
-		this.name = "PlatformAIError";
-	}
-};
-function platformAIUrl() {
-	const baseUrl = env.SKYWORK_AI_BASE_URL.trim().replace(/\/+$/, "");
-	if (!baseUrl || !env.SKYWORK_API_TOKEN) throw new PlatformAIError("PLATFORM_AI_NOT_CONFIGURED", "Platform AI is not configured", 500);
-	return `${baseUrl}${CHAT_COMPLETIONS_PATH}`;
-}
-async function readUpstreamErrorMessage(response) {
-	const raw$1 = await response.text().catch(() => "");
-	if (!raw$1.trim()) return "";
-	try {
-		const payload = JSON.parse(raw$1);
-		if (typeof payload.error === "object" && typeof payload.error?.message === "string") return payload.error.message;
-		if (typeof payload.message === "string") return payload.message;
-		if (typeof payload.error === "string") return payload.error;
-	} catch {
-		return raw$1.trim();
-	}
-	return raw$1.trim();
-}
-async function requestPlatformAIResponse(input, stream) {
-	const url$1 = platformAIUrl();
-	let response;
-	try {
-		response = await fetch(url$1, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				"X-Skywork-Api-Token": env.SKYWORK_API_TOKEN,
-				"x-skywork-billing-source": "skybot",
-				"X-Skywork-Scene": input.sceneKey
-			},
-			body: JSON.stringify({
-				messages: input.messages,
-				stream,
-				max_tokens: 2048
-			}),
-			signal: stream ? void 0 : AbortSignal.timeout(REQUEST_TIMEOUT_MS)
-		});
-	} catch {
-		throw new PlatformAIError("PLATFORM_AI_REQUEST_FAILED", "AI request failed", 502);
-	}
-	if (!response.ok) {
-		const upstreamMessage = await readUpstreamErrorMessage(response);
-		throw new PlatformAIError("PLATFORM_AI_UPSTREAM_ERROR", `AI upstream error: ${response.status}${upstreamMessage ? `: ${upstreamMessage}` : ""}`, 502);
-	}
-	return response;
-}
-async function requestPlatformAIChat(input) {
-	const response = await requestPlatformAIResponse(input, false);
-	let data;
-	try {
-		data = await response.json();
-	} catch {
-		throw new PlatformAIError("PLATFORM_AI_INVALID_RESPONSE", "AI response was invalid", 502);
-	}
-	const reply = data.choices?.[0]?.message?.content;
-	return { reply: typeof reply === "string" ? reply : "" };
-}
-async function requestPlatformAIChatStream(input) {
-	const response = await requestPlatformAIResponse(input, true);
-	if (!response.body) throw new PlatformAIError("PLATFORM_AI_INVALID_RESPONSE", "AI response was invalid", 502);
-	return response;
-}
-var ai_route_exports = /* @__PURE__ */ __export({ aiRouter: () => aiRouter }, 1);
-var SceneKeySchema = string$2().trim().regex(/^[a-z][a-z0-9_]{0,63}$/).refine((sceneKey) => !sceneKey.endsWith("_") && !sceneKey.includes("__"));
-var MessageContentSchema = union$1([string$2(), array$1(discriminatedUnion("type", [object$1({
-	type: literal("text"),
-	text: string$2()
-}), object$1({
-	type: literal("image_url"),
-	image_url: object$1({ url: string$2().url() })
-})])).min(1).max(20)]);
-var ChatRequestSchema = object$1({
-	scene_key: SceneKeySchema,
-	messages: array$1(object$1({
-		role: _enum([
-			"system",
-			"user",
-			"assistant"
-		]),
-		content: MessageContentSchema
-	})).min(1).max(50),
-	stream: boolean$2().optional().default(false)
-});
-const aiRouter = new Hono();
-var chatHandler = async (c) => {
-	const parsed = ChatRequestSchema.safeParse(await c.req.json().catch(() => null));
-	if (!parsed.success) return c.json(apiFailure("INVALID_INPUT", "Invalid AI chat input"), 400);
-	try {
-		if (parsed.data.stream) {
-			const upstream = await requestPlatformAIChatStream({
-				sceneKey: parsed.data.scene_key,
-				messages: parsed.data.messages
-			});
-			return new Response(upstream.body, {
-				status: 200,
-				headers: {
-					"Content-Type": upstream.headers.get("Content-Type") ?? "text/event-stream; charset=utf-8",
-					"Cache-Control": upstream.headers.get("Cache-Control") ?? "no-cache",
-					"X-Accel-Buffering": "no"
-				}
-			});
-		}
-		const result = await requestPlatformAIChat({
-			sceneKey: parsed.data.scene_key,
-			messages: parsed.data.messages
-		});
-		return c.json(apiSuccess(result), 200);
-	} catch (error$51) {
-		if (error$51 instanceof PlatformAIError) return c.json(apiFailure(error$51.code, error$51.message), error$51.status);
-		throw error$51;
-	}
-};
-aiRouter.post("", protectedRoute, chatHandler);
-aiRouter.post("/", protectedRoute, chatHandler);
-function escapeRegExpChar(char) {
-	if (char === "-" || char === "^" || char === "$" || char === "+" || char === "." || char === "(" || char === ")" || char === "|" || char === "[" || char === "]" || char === "{" || char === "}" || char === "*" || char === "?" || char === "\\") return `\\${char}`;
-	else return char;
-}
-function escapeRegExpString(str) {
-	let result = "";
-	for (let i = 0; i < str.length; i++) result += escapeRegExpChar(str[i]);
-	return result;
-}
-function transform(pattern, separator = true) {
-	if (Array.isArray(pattern)) return `(?:${pattern.map((p) => `^${transform(p, separator)}$`).join("|")})`;
-	let separatorSplitter = "";
-	let separatorMatcher = "";
-	let wildcard = ".";
-	if (separator === true) {
-		separatorSplitter = "/";
-		separatorMatcher = "[/\\\\]";
-		wildcard = "[^/\\\\]";
-	} else if (separator) {
-		separatorSplitter = separator;
-		separatorMatcher = escapeRegExpString(separatorSplitter);
-		if (separatorMatcher.length > 1) {
-			separatorMatcher = `(?:${separatorMatcher})`;
-			wildcard = `((?!${separatorMatcher}).)`;
-		} else wildcard = `[^${separatorMatcher}]`;
-	}
-	const requiredSeparator = separator ? `${separatorMatcher}+?` : "";
-	const optionalSeparator = separator ? `${separatorMatcher}*?` : "";
-	const segments = separator ? pattern.split(separatorSplitter) : [pattern];
-	let result = "";
-	for (let s = 0; s < segments.length; s++) {
-		const segment = segments[s];
-		const nextSegment = segments[s + 1];
-		let currentSeparator = "";
-		if (!segment && s > 0) continue;
-		if (separator) if (s === segments.length - 1) currentSeparator = optionalSeparator;
-		else if (nextSegment !== "**") currentSeparator = requiredSeparator;
-		else currentSeparator = "";
-		if (separator && segment === "**") {
-			if (currentSeparator) {
-				result += s === 0 ? "" : currentSeparator;
-				result += `(?:${wildcard}*?${currentSeparator})*?`;
-			}
-			continue;
-		}
-		for (let c = 0; c < segment.length; c++) {
-			const char = segment[c];
-			if (char === "\\") {
-				if (c < segment.length - 1) {
-					result += escapeRegExpChar(segment[c + 1]);
-					c++;
-				}
-			} else if (char === "?") result += wildcard;
-			else if (char === "*") result += `${wildcard}*?`;
-			else result += escapeRegExpChar(char);
-		}
-		result += currentSeparator;
-	}
-	return result;
-}
-function isMatch(regexp, sample) {
-	if (typeof sample !== "string") throw new TypeError(`Sample must be a string, but ${typeof sample} given`);
-	return regexp.test(sample);
-}
-function wildcardMatch(pattern, options) {
-	if (typeof pattern !== "string" && !Array.isArray(pattern)) throw new TypeError(`The first argument must be a single pattern string or an array of patterns, but ${typeof pattern} given`);
-	if (typeof options === "string" || typeof options === "boolean") options = { separator: options };
-	if (arguments.length === 2 && !(typeof options === "undefined" || typeof options === "object" && options !== null && !Array.isArray(options))) throw new TypeError(`The second argument must be an options object or a string/boolean separator, but ${typeof options} given`);
-	options = options || {};
-	if (options.separator === "\\") throw new Error("\\ is not a valid separator because it is used for escaping. Try setting the separator to `true` instead");
-	const regexpPattern = transform(pattern, options.separator);
-	const regexp = new RegExp(`^${regexpPattern}$`, options.flags);
-	const fn = isMatch.bind(null, regexp);
-	fn.options = options;
-	fn.pattern = pattern;
-	fn.regexp = regexp;
-	return fn;
-}
-var _envShim = Object.create(null);
-var _getEnv = (useShim) => globalThis.process?.env || globalThis.Deno?.env.toObject() || globalThis.__env__ || (useShim ? _envShim : globalThis);
-var env$1 = new Proxy(_envShim, {
-	get(_, prop) {
-		return _getEnv()[prop] ?? _envShim[prop];
-	},
-	has(_, prop) {
-		return prop in _getEnv() || prop in _envShim;
-	},
-	set(_, prop, value) {
-		const env$2 = _getEnv(true);
-		env$2[prop] = value;
-		return true;
-	},
-	deleteProperty(_, prop) {
-		if (!prop) return false;
-		const env$2 = _getEnv(true);
-		delete env$2[prop];
-		return true;
-	},
-	ownKeys() {
-		const env$2 = _getEnv(true);
-		return Object.keys(env$2);
-	}
-});
-function toBoolean(val) {
-	return val ? val !== "false" : false;
-}
-var nodeENV = typeof process !== "undefined" && process.env && process.env.NODE_ENV || "";
-var isProduction = nodeENV === "production";
-var isDevelopment = () => nodeENV === "dev" || nodeENV === "development";
-var isTest = () => nodeENV === "test" || toBoolean(env$1.TEST);
-function getEnvVar(key, fallback) {
-	if (typeof process !== "undefined" && process.env) return process.env[key] ?? fallback;
-	if (typeof Deno !== "undefined") return Deno.env.get(key) ?? fallback;
-	if (typeof Bun !== "undefined") return Bun.env[key] ?? fallback;
-	return fallback;
-}
-function getBooleanEnvVar(key, fallback = true) {
-	const value = getEnvVar(key);
-	if (!value) return fallback;
-	return value !== "0" && value.toLowerCase() !== "false" && value !== "";
-}
-var ENV = Object.freeze({
-	get BETTER_AUTH_SECRET() {
-		return getEnvVar("BETTER_AUTH_SECRET");
-	},
-	get AUTH_SECRET() {
-		return getEnvVar("AUTH_SECRET");
-	},
-	get BETTER_AUTH_TELEMETRY() {
-		return getEnvVar("BETTER_AUTH_TELEMETRY");
-	},
-	get BETTER_AUTH_TELEMETRY_ID() {
-		return getEnvVar("BETTER_AUTH_TELEMETRY_ID");
-	},
-	get NODE_ENV() {
-		return getEnvVar("NODE_ENV", "development");
-	},
-	get PACKAGE_VERSION() {
-		return getEnvVar("PACKAGE_VERSION", "0.0.0");
-	},
-	get BETTER_AUTH_TELEMETRY_ENDPOINT() {
-		return getEnvVar("BETTER_AUTH_TELEMETRY_ENDPOINT", "");
-	}
-});
-var COLORS_2 = 1;
-var COLORS_16 = 4;
-var COLORS_256 = 8;
-var COLORS_16m = 24;
-var TERM_ENVS = {
-	eterm: COLORS_16,
-	cons25: COLORS_16,
-	console: COLORS_16,
-	cygwin: COLORS_16,
-	dtterm: COLORS_16,
-	gnome: COLORS_16,
-	hurd: COLORS_16,
-	jfbterm: COLORS_16,
-	konsole: COLORS_16,
-	kterm: COLORS_16,
-	mlterm: COLORS_16,
-	mosh: COLORS_16m,
-	putty: COLORS_16,
-	st: COLORS_16,
-	"rxvt-unicode-24bit": COLORS_16m,
-	terminator: COLORS_16m,
-	"xterm-kitty": COLORS_16m
-};
-var CI_ENVS_MAP = new Map(Object.entries({
-	APPVEYOR: COLORS_256,
-	BUILDKITE: COLORS_256,
-	CIRCLECI: COLORS_16m,
-	DRONE: COLORS_256,
-	GITEA_ACTIONS: COLORS_16m,
-	GITHUB_ACTIONS: COLORS_16m,
-	GITLAB_CI: COLORS_256,
-	TRAVIS: COLORS_256
-}));
-var TERM_ENVS_REG_EXP = [
-	/ansi/,
-	/color/,
-	/linux/,
-	/direct/,
-	/^con[0-9]*x[0-9]/,
-	/^rxvt/,
-	/^screen/,
-	/^xterm/,
-	/^vt100/,
-	/^vt220/
-];
-function getColorDepth() {
-	if (getEnvVar("FORCE_COLOR") !== void 0) switch (getEnvVar("FORCE_COLOR")) {
-		case "":
-		case "1":
-		case "true": return COLORS_16;
-		case "2": return COLORS_256;
-		case "3": return COLORS_16m;
-		default: return COLORS_2;
-	}
-	if (getEnvVar("NODE_DISABLE_COLORS") !== void 0 && getEnvVar("NODE_DISABLE_COLORS") !== "" || getEnvVar("NO_COLOR") !== void 0 && getEnvVar("NO_COLOR") !== "" || getEnvVar("TERM") === "dumb") return COLORS_2;
-	if (getEnvVar("TMUX")) return COLORS_16m;
-	if ("TF_BUILD" in env$1 && "AGENT_NAME" in env$1) return COLORS_16;
-	if ("CI" in env$1) {
-		for (const { 0: envName, 1: colors } of CI_ENVS_MAP) if (envName in env$1) return colors;
-		if (getEnvVar("CI_NAME") === "codeship") return COLORS_256;
-		return COLORS_2;
-	}
-	if ("TEAMCITY_VERSION" in env$1) return /^(9\.(0*[1-9]\d*)\.|\d{2,}\.)/.exec(getEnvVar("TEAMCITY_VERSION")) !== null ? COLORS_16 : COLORS_2;
-	switch (getEnvVar("TERM_PROGRAM")) {
-		case "iTerm.app":
-			if (!getEnvVar("TERM_PROGRAM_VERSION") || /^[0-2]\./.exec(getEnvVar("TERM_PROGRAM_VERSION")) !== null) return COLORS_256;
-			return COLORS_16m;
-		case "HyperTerm":
-		case "MacTerm": return COLORS_16m;
-		case "Apple_Terminal": return COLORS_256;
-	}
-	if (getEnvVar("COLORTERM") === "truecolor" || getEnvVar("COLORTERM") === "24bit") return COLORS_16m;
-	if (getEnvVar("TERM")) {
-		if (/truecolor/.exec(getEnvVar("TERM")) !== null) return COLORS_16m;
-		if (/^xterm-256/.exec(getEnvVar("TERM")) !== null) return COLORS_256;
-		const termEnv = getEnvVar("TERM").toLowerCase();
-		if (TERM_ENVS[termEnv]) return TERM_ENVS[termEnv];
-		if (TERM_ENVS_REG_EXP.some((term) => term.exec(termEnv) !== null)) return COLORS_16;
-	}
-	if (getEnvVar("COLORTERM")) return COLORS_16;
-	return COLORS_2;
-}
-var TTY_COLORS = {
-	reset: "\x1B[0m",
-	bright: "\x1B[1m",
-	dim: "\x1B[2m",
-	undim: "\x1B[22m",
-	underscore: "\x1B[4m",
-	blink: "\x1B[5m",
-	reverse: "\x1B[7m",
-	hidden: "\x1B[8m",
-	fg: {
-		black: "\x1B[30m",
-		red: "\x1B[31m",
-		green: "\x1B[32m",
-		yellow: "\x1B[33m",
-		blue: "\x1B[34m",
-		magenta: "\x1B[35m",
-		cyan: "\x1B[36m",
-		white: "\x1B[37m"
-	},
-	bg: {
-		black: "\x1B[40m",
-		red: "\x1B[41m",
-		green: "\x1B[42m",
-		yellow: "\x1B[43m",
-		blue: "\x1B[44m",
-		magenta: "\x1B[45m",
-		cyan: "\x1B[46m",
-		white: "\x1B[47m"
-	}
-};
-var levels = [
-	"debug",
-	"info",
-	"success",
-	"warn",
-	"error"
-];
-function shouldPublishLog(currentLogLevel, logLevel) {
-	return levels.indexOf(logLevel) >= levels.indexOf(currentLogLevel);
-}
-var levelColors = {
-	info: TTY_COLORS.fg.blue,
-	success: TTY_COLORS.fg.green,
-	warn: TTY_COLORS.fg.yellow,
-	error: TTY_COLORS.fg.red,
-	debug: TTY_COLORS.fg.magenta
-};
-var formatMessage = (level, message$1, colorsEnabled) => {
-	const timestamp = (/* @__PURE__ */ new Date()).toISOString();
-	if (colorsEnabled) return `${TTY_COLORS.dim}${timestamp}${TTY_COLORS.reset} ${levelColors[level]}${level.toUpperCase()}${TTY_COLORS.reset} ${TTY_COLORS.bright}[Better Auth]:${TTY_COLORS.reset} ${message$1}`;
-	return `${timestamp} ${level.toUpperCase()} [Better Auth]: ${message$1}`;
-};
-var createLogger = (options) => {
-	const enabled = options?.disabled !== true;
-	const logLevel = options?.level ?? "warn";
-	const colorsEnabled = options?.disableColors !== void 0 ? !options.disableColors : getColorDepth() !== 1;
-	const LogFunc = (level, message$1, args = []) => {
-		if (!enabled || !shouldPublishLog(logLevel, level)) return;
-		const formattedMessage = formatMessage(level, message$1, colorsEnabled);
-		if (!options || typeof options.log !== "function") {
-			if (level === "error") console.error(formattedMessage, ...args);
-			else if (level === "warn") console.warn(formattedMessage, ...args);
-			else console.log(formattedMessage, ...args);
-			return;
-		}
-		options.log(level === "success" ? "info" : level, message$1, ...args);
-	};
-	return {
-		...Object.fromEntries(levels.map((level) => [level, (...[message$1, ...args]) => LogFunc(level, message$1, args)])),
-		get level() {
-			return logLevel;
-		}
-	};
-};
-var logger = createLogger();
-function defineErrorCodes(codes) {
-	return Object.fromEntries(Object.entries(codes).map(([key, value]) => [key, {
-		code: key,
-		message: value,
-		toString: () => key
-	}]));
-}
-var BASE_ERROR_CODES = defineErrorCodes({
-	USER_NOT_FOUND: "User not found",
-	FAILED_TO_CREATE_USER: "Failed to create user",
-	FAILED_TO_CREATE_SESSION: "Failed to create session",
-	FAILED_TO_UPDATE_USER: "Failed to update user",
-	FAILED_TO_GET_SESSION: "Failed to get session",
-	INVALID_PASSWORD: "Invalid password",
-	INVALID_EMAIL: "Invalid email",
-	INVALID_EMAIL_OR_PASSWORD: "Invalid email or password",
-	INVALID_USER: "Invalid user",
-	SOCIAL_ACCOUNT_ALREADY_LINKED: "Social account already linked",
-	PROVIDER_NOT_FOUND: "Provider not found",
-	INVALID_TOKEN: "Invalid token",
-	TOKEN_EXPIRED: "Token expired",
-	ID_TOKEN_NOT_SUPPORTED: "id_token not supported",
-	FAILED_TO_GET_USER_INFO: "Failed to get user info",
-	USER_EMAIL_NOT_FOUND: "User email not found",
-	EMAIL_NOT_VERIFIED: "Email not verified",
-	PASSWORD_TOO_SHORT: "Password too short",
-	PASSWORD_TOO_LONG: "Password too long",
-	USER_ALREADY_EXISTS: "User already exists.",
-	USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL: "User already exists. Use another email.",
-	EMAIL_CAN_NOT_BE_UPDATED: "Email can not be updated",
-	CHANGE_EMAIL_DISABLED: "Change email is disabled",
-	CREDENTIAL_ACCOUNT_NOT_FOUND: "Credential account not found",
-	SESSION_EXPIRED: "Session expired. Re-authenticate to perform this action.",
-	FAILED_TO_UNLINK_LAST_ACCOUNT: "You can't unlink your last account",
-	ACCOUNT_NOT_FOUND: "Account not found",
-	USER_ALREADY_HAS_PASSWORD: "User already has a password. Provide that to delete the account.",
-	CROSS_SITE_NAVIGATION_LOGIN_BLOCKED: "Cross-site navigation login blocked. This request appears to be a CSRF attack.",
-	VERIFICATION_EMAIL_NOT_ENABLED: "Verification email isn't enabled",
-	EMAIL_ALREADY_VERIFIED: "Email is already verified",
-	EMAIL_MISMATCH: "Email mismatch",
-	SESSION_NOT_FRESH: "Session is not fresh",
-	LINKED_ACCOUNT_ALREADY_EXISTS: "Linked account already exists",
-	INVALID_ORIGIN: "Invalid origin",
-	INVALID_CALLBACK_URL: "Invalid callbackURL",
-	INVALID_REDIRECT_URL: "Invalid redirectURL",
-	INVALID_ERROR_CALLBACK_URL: "Invalid errorCallbackURL",
-	INVALID_NEW_USER_CALLBACK_URL: "Invalid newUserCallbackURL",
-	MISSING_OR_NULL_ORIGIN: "Missing or null Origin",
-	CALLBACK_URL_REQUIRED: "callbackURL is required",
-	FAILED_TO_CREATE_VERIFICATION: "Unable to create verification",
-	FIELD_NOT_ALLOWED: "Field not allowed to be set",
-	ASYNC_VALIDATION_NOT_SUPPORTED: "Async validation is not supported",
-	VALIDATION_ERROR: "Validation Error",
-	MISSING_FIELD: "Field is required",
-	METHOD_NOT_ALLOWED_DEFER_SESSION_REQUIRED: "POST method requires deferSessionRefresh to be enabled in session config",
-	BODY_MUST_BE_AN_OBJECT: "Body must be an object",
-	PASSWORD_ALREADY_SET: "User already has a password set"
-});
-function isErrorStackTraceLimitWritable() {
-	const desc$1 = Object.getOwnPropertyDescriptor(Error, "stackTraceLimit");
-	if (desc$1 === void 0) return Object.isExtensible(Error);
-	return Object.prototype.hasOwnProperty.call(desc$1, "writable") ? desc$1.writable : desc$1.set !== void 0;
-}
-function hideInternalStackFrames(stack) {
-	const lines = stack.split("\n    at ");
-	if (lines.length <= 1) return stack;
-	lines.splice(1, 1);
-	return lines.join("\n    at ");
-}
-function makeErrorForHideStackFrame(Base, clazz) {
-	class HideStackFramesError extends Base {
-		#hiddenStack;
-		constructor(...args) {
-			if (isErrorStackTraceLimitWritable()) {
-				const limit = Error.stackTraceLimit;
-				Error.stackTraceLimit = 0;
-				super(...args);
-				Error.stackTraceLimit = limit;
-			} else super(...args);
-			const stack = (/* @__PURE__ */ new Error()).stack;
-			if (stack) this.#hiddenStack = hideInternalStackFrames(stack.replace(/^Error/, this.name));
-		}
-		get errorStack() {
-			return this.#hiddenStack;
-		}
-	}
-	Object.defineProperty(HideStackFramesError.prototype, "constructor", {
-		get() {
-			return clazz;
-		},
-		enumerable: false,
-		configurable: true
-	});
-	return HideStackFramesError;
-}
-var statusCodes = {
-	OK: 200,
-	CREATED: 201,
-	ACCEPTED: 202,
-	NO_CONTENT: 204,
-	MULTIPLE_CHOICES: 300,
-	MOVED_PERMANENTLY: 301,
-	FOUND: 302,
-	SEE_OTHER: 303,
-	NOT_MODIFIED: 304,
-	TEMPORARY_REDIRECT: 307,
-	BAD_REQUEST: 400,
-	UNAUTHORIZED: 401,
-	PAYMENT_REQUIRED: 402,
-	FORBIDDEN: 403,
-	NOT_FOUND: 404,
-	METHOD_NOT_ALLOWED: 405,
-	NOT_ACCEPTABLE: 406,
-	PROXY_AUTHENTICATION_REQUIRED: 407,
-	REQUEST_TIMEOUT: 408,
-	CONFLICT: 409,
-	GONE: 410,
-	LENGTH_REQUIRED: 411,
-	PRECONDITION_FAILED: 412,
-	PAYLOAD_TOO_LARGE: 413,
-	URI_TOO_LONG: 414,
-	UNSUPPORTED_MEDIA_TYPE: 415,
-	RANGE_NOT_SATISFIABLE: 416,
-	EXPECTATION_FAILED: 417,
-	"I'M_A_TEAPOT": 418,
-	MISDIRECTED_REQUEST: 421,
-	UNPROCESSABLE_ENTITY: 422,
-	LOCKED: 423,
-	FAILED_DEPENDENCY: 424,
-	TOO_EARLY: 425,
-	UPGRADE_REQUIRED: 426,
-	PRECONDITION_REQUIRED: 428,
-	TOO_MANY_REQUESTS: 429,
-	REQUEST_HEADER_FIELDS_TOO_LARGE: 431,
-	UNAVAILABLE_FOR_LEGAL_REASONS: 451,
-	INTERNAL_SERVER_ERROR: 500,
-	NOT_IMPLEMENTED: 501,
-	BAD_GATEWAY: 502,
-	SERVICE_UNAVAILABLE: 503,
-	GATEWAY_TIMEOUT: 504,
-	HTTP_VERSION_NOT_SUPPORTED: 505,
-	VARIANT_ALSO_NEGOTIATES: 506,
-	INSUFFICIENT_STORAGE: 507,
-	LOOP_DETECTED: 508,
-	NOT_EXTENDED: 510,
-	NETWORK_AUTHENTICATION_REQUIRED: 511
-};
-var InternalAPIError = class extends Error {
-	constructor(status = "INTERNAL_SERVER_ERROR", body = void 0, headers = {}, statusCode = typeof status === "number" ? status : statusCodes[status]) {
-		super(body?.message, body?.cause ? { cause: body.cause } : void 0);
-		this.status = status;
-		this.body = body;
-		this.headers = headers;
-		this.statusCode = statusCode;
-		this.name = "APIError";
-		this.status = status;
-		this.headers = headers;
-		this.statusCode = statusCode;
-		this.body = body;
-	}
-};
-var ValidationError$1 = class extends InternalAPIError {
-	constructor(message$1, issues) {
-		super(400, {
-			message: message$1,
-			code: "VALIDATION_ERROR"
-		});
-		this.message = message$1;
-		this.issues = issues;
-		this.issues = issues;
-	}
-};
-var BetterCallError = class extends Error {
-	constructor(message$1) {
-		super(message$1);
-		this.name = "BetterCallError";
-	}
-};
-var kAPIErrorHeaderSymbol = Symbol.for("better-call:api-error-headers");
-var APIError$1 = makeErrorForHideStackFrame(InternalAPIError, Error);
-var BetterAuthError = class extends Error {
-	constructor(message$1, options) {
-		super(message$1, options);
-		this.name = "BetterAuthError";
-		this.message = message$1;
-		this.stack = "";
-	}
-};
-var APIError = class APIError$2 extends APIError$1 {
-	constructor(...args) {
-		super(...args);
-	}
-	static fromStatus(status, body) {
-		return new APIError$2(status, body);
-	}
-	static from(status, error$51) {
-		return new APIError$2(status, {
-			message: error$51.message,
-			code: error$51.code
-		});
-	}
-};
-var SLASH_CHAR_CODE = "/".charCodeAt(0);
-function isLoopbackForDevScheme(host) {
-	const hostname$2 = host.replace(/:\d+$/, "").replace(/^\[|\]$/g, "").toLowerCase();
-	return hostname$2 === "localhost" || hostname$2.endsWith(".localhost") || hostname$2 === "::1" || hostname$2.startsWith("127.");
-}
-function trimTrailingSlashes(value) {
-	let end = value.length;
-	while (end > 0 && value.charCodeAt(end - 1) === SLASH_CHAR_CODE) end--;
-	return end === value.length ? value : value.slice(0, end);
-}
-function checkHasPath(url$1) {
-	try {
-		return (trimTrailingSlashes(new URL(url$1).pathname) || "/") !== "/";
-	} catch {
-		throw new BetterAuthError(`Invalid base URL: ${url$1}. Please provide a valid base URL.`);
-	}
-}
-function assertHasProtocol(url$1) {
-	try {
-		const parsedUrl = new URL(url$1);
-		if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") throw new BetterAuthError(`Invalid base URL: ${url$1}. URL must include 'http://' or 'https://'`);
-	} catch (error$51) {
-		if (error$51 instanceof BetterAuthError) throw error$51;
-		throw new BetterAuthError(`Invalid base URL: ${url$1}. Please provide a valid base URL.`, { cause: error$51 });
-	}
-}
-function withPath(url$1, path$1 = "/api/auth") {
-	assertHasProtocol(url$1);
-	if (checkHasPath(url$1)) return url$1;
-	const trimmedUrl = trimTrailingSlashes(url$1);
-	if (!path$1 || path$1 === "/") return trimmedUrl;
-	path$1 = path$1.startsWith("/") ? path$1 : `/${path$1}`;
-	return `${trimmedUrl}${path$1}`;
-}
-function validateProxyHeader(header, type) {
-	if (!header || header.trim() === "") return false;
-	if (type === "proto") return header === "http" || header === "https";
-	if (type === "host") {
-		if ([
-			/\.\./,
-			/\0/,
-			/[\s]/,
-			/^[.]/,
-			/[<>'"]/,
-			/javascript:/i,
-			/file:/i,
-			/data:/i
-		].some((pattern) => pattern.test(header))) return false;
-		return /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*(:[0-9]{1,5})?$/.test(header) || /^(\d{1,3}\.){3}\d{1,3}(:[0-9]{1,5})?$/.test(header) || /^\[[0-9a-fA-F:]+\](:[0-9]{1,5})?$/.test(header) || /^localhost(:[0-9]{1,5})?$/i.test(header);
-	}
-	return false;
-}
-function getBaseURL(url$1, path$1, request, loadEnv, trustedProxyHeaders) {
-	if (url$1) return withPath(url$1, path$1);
-	if (loadEnv !== false) {
-		const fromEnv = env$1.BETTER_AUTH_URL || env$1.NEXT_PUBLIC_BETTER_AUTH_URL || env$1.PUBLIC_BETTER_AUTH_URL || env$1.NUXT_PUBLIC_BETTER_AUTH_URL || env$1.NUXT_PUBLIC_AUTH_URL || (env$1.BASE_URL !== "/" ? env$1.BASE_URL : void 0);
-		if (fromEnv) return withPath(fromEnv, path$1);
-	}
-	const fromRequest = request?.headers.get("x-forwarded-host");
-	const fromRequestProto = request?.headers.get("x-forwarded-proto");
-	if (fromRequest && fromRequestProto && trustedProxyHeaders) {
-		if (validateProxyHeader(fromRequestProto, "proto") && validateProxyHeader(fromRequest, "host")) try {
-			return withPath(`${fromRequestProto}://${fromRequest}`, path$1);
-		} catch (_error) {}
-	}
-	if (request) {
-		const url$2 = getOrigin(request.url);
-		if (!url$2) throw new BetterAuthError("Could not get origin from request. Please provide a valid base URL.");
-		return withPath(url$2, path$1);
-	}
-	if (typeof window !== "undefined" && window.location) return withPath(window.location.origin, path$1);
-}
-function getOrigin(url$1) {
-	try {
-		const parsedUrl = new URL(url$1);
-		return parsedUrl.origin === "null" ? null : parsedUrl.origin;
-	} catch {
-		return null;
-	}
-}
-function getProtocol(url$1) {
-	try {
-		return new URL(url$1).protocol;
-	} catch {
-		return null;
-	}
-}
-function getHost(url$1) {
-	try {
-		return new URL(url$1).host;
-	} catch {
-		return null;
-	}
-}
-function isDynamicBaseURLConfig(config$2) {
-	return typeof config$2 === "object" && config$2 !== null && "allowedHosts" in config$2 && Array.isArray(config$2.allowedHosts);
-}
-function isRequestLike(value) {
-	if (value instanceof Request) return true;
-	if (typeof value !== "object" || value === null || Object.prototype.toString.call(value) !== "[object Request]") return false;
-	const v = value;
-	return typeof v.url === "string" && typeof v.headers === "object" && v.headers !== null && typeof v.headers.get === "function";
-}
-function getHostFromSource(source, trustedProxyHeaders) {
-	const headers = isRequestLike(source) ? source.headers : source;
-	if (trustedProxyHeaders) {
-		const forwardedHost = headers.get("x-forwarded-host");
-		if (forwardedHost && validateProxyHeader(forwardedHost, "host")) return forwardedHost;
-	}
-	const host = headers.get("host");
-	if (host && validateProxyHeader(host, "host")) return host;
-	if (isRequestLike(source)) try {
-		return new URL(source.url).host;
-	} catch {
-		return null;
-	}
-	return null;
-}
-function getProtocolFromSource(source, configProtocol, trustedProxyHeaders) {
-	if (configProtocol === "http" || configProtocol === "https") return configProtocol;
-	const headers = isRequestLike(source) ? source.headers : source;
-	if (trustedProxyHeaders) {
-		const forwardedProto = headers.get("x-forwarded-proto");
-		if (forwardedProto && validateProxyHeader(forwardedProto, "proto")) return forwardedProto;
-	}
-	if (isRequestLike(source)) try {
-		const url$1 = new URL(source.url);
-		if (url$1.protocol === "http:" || url$1.protocol === "https:") return url$1.protocol.slice(0, -1);
-	} catch {}
-	const host = getHostFromSource(source, trustedProxyHeaders);
-	if (host && isLoopbackForDevScheme(host)) return "http";
-	return "https";
-}
-var matchesHostPattern = (host, pattern) => {
-	if (!host || !pattern) return false;
-	const normalizedHost = host.replace(/^https?:\/\//, "").split("/")[0].toLowerCase();
-	const normalizedPattern = pattern.replace(/^https?:\/\//, "").split("/")[0].toLowerCase();
-	if (normalizedPattern.includes("*") || normalizedPattern.includes("?")) return wildcardMatch(normalizedPattern)(normalizedHost);
-	return normalizedHost.toLowerCase() === normalizedPattern.toLowerCase();
-};
-function resolveDynamicBaseURL(config$2, source, basePath, trustedProxyHeaders) {
-	const host = getHostFromSource(source, trustedProxyHeaders);
-	if (!host) {
-		if (config$2.fallback) return withPath(config$2.fallback, basePath);
-		throw new BetterAuthError("Could not determine host from request headers. Please provide a fallback URL in your baseURL config.");
-	}
-	if (config$2.allowedHosts.some((pattern) => matchesHostPattern(host, pattern))) return withPath(`${getProtocolFromSource(source, config$2.protocol, trustedProxyHeaders)}://${host}`, basePath);
-	if (config$2.fallback) return withPath(config$2.fallback, basePath);
-	throw new BetterAuthError(`Host "${host}" is not in the allowed hosts list. Allowed hosts: ${config$2.allowedHosts.join(", ")}. Add this host to your allowedHosts config or provide a fallback URL.`);
-}
-function resolveBaseURL(config$2, basePath, source, loadEnv, trustedProxyHeaders) {
-	if (isDynamicBaseURLConfig(config$2)) {
-		if (source) return resolveDynamicBaseURL(config$2, source, basePath, trustedProxyHeaders);
-		if (config$2.fallback) return withPath(config$2.fallback, basePath);
-		return getBaseURL(void 0, basePath, void 0, loadEnv, trustedProxyHeaders);
-	}
-	const request = isRequestLike(source) ? source : void 0;
-	if (typeof config$2 === "string") return getBaseURL(config$2, basePath, request, loadEnv, trustedProxyHeaders);
-	return getBaseURL(void 0, basePath, request, loadEnv, trustedProxyHeaders);
-}
-function isPromise(obj) {
-	return !!obj && (typeof obj === "object" || typeof obj === "function") && typeof obj.then === "function";
-}
-function isBytes$1(a) {
-	return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array" && "BYTES_PER_ELEMENT" in a && a.BYTES_PER_ELEMENT === 1;
-}
-function anumber$1(n, title = "") {
-	if (typeof n !== "number") {
-		const prefix = title && `"${title}" `;
-		throw new TypeError(`${prefix}expected number, got ${typeof n}`);
-	}
-	if (!Number.isSafeInteger(n) || n < 0) {
-		const prefix = title && `"${title}" `;
-		throw new RangeError(`${prefix}expected integer >= 0, got ${n}`);
-	}
-}
-function abytes$1(value, length, title = "") {
-	const bytes = isBytes$1(value);
-	const len = value?.length;
-	const needsLen = length !== void 0;
-	if (!bytes || needsLen && len !== length) {
-		const prefix = title && `"${title}" `;
-		const ofLen = needsLen ? ` of length ${length}` : "";
-		const got = bytes ? `length=${len}` : `type=${typeof value}`;
-		const message$1 = prefix + "expected Uint8Array" + ofLen + ", got " + got;
-		if (!bytes) throw new TypeError(message$1);
-		throw new RangeError(message$1);
-	}
-	return value;
-}
-function ahash(h) {
-	if (typeof h !== "function" || typeof h.create !== "function") throw new TypeError("Hash must wrapped by utils.createHasher");
-	anumber$1(h.outputLen);
-	anumber$1(h.blockLen);
-	if (h.outputLen < 1) throw new Error("\"outputLen\" must be >= 1");
-	if (h.blockLen < 1) throw new Error("\"blockLen\" must be >= 1");
-}
-function aexists$1(instance, checkFinished = true) {
-	if (instance.destroyed) throw new Error("Hash instance has been destroyed");
-	if (checkFinished && instance.finished) throw new Error("Hash#digest() has already been called");
-}
-function aoutput$1(out, instance) {
-	abytes$1(out, void 0, "digestInto() output");
-	const min = instance.outputLen;
-	if (out.length < min) throw new RangeError("\"digestInto() output\" expected to be of length >=" + min);
-}
-function clean$1(...arrays) {
-	for (let i = 0; i < arrays.length; i++) arrays[i].fill(0);
-}
-function createView$1(arr) {
-	return new DataView(arr.buffer, arr.byteOffset, arr.byteLength);
-}
-function rotr(word, shift) {
-	return word << 32 - shift | word >>> shift;
-}
-function createHasher(hashCons, info$1 = {}) {
-	const hashC = (msg, opts) => hashCons(opts).update(msg).digest();
-	const tmp = hashCons(void 0);
-	hashC.outputLen = tmp.outputLen;
-	hashC.blockLen = tmp.blockLen;
-	hashC.canXOF = tmp.canXOF;
-	hashC.create = (opts) => hashCons(opts);
-	Object.assign(hashC, info$1);
-	return Object.freeze(hashC);
-}
-const oidNist = (suffix) => ({ oid: Uint8Array.from([
-	6,
-	9,
-	96,
-	134,
-	72,
-	1,
-	101,
-	3,
-	4,
-	2,
-	suffix
-]) });
-var _HMAC = class {
-	oHash;
-	iHash;
-	blockLen;
-	outputLen;
-	canXOF = false;
-	finished = false;
-	destroyed = false;
-	constructor(hash$1, key) {
-		ahash(hash$1);
-		abytes$1(key, void 0, "key");
-		this.iHash = hash$1.create();
-		if (typeof this.iHash.update !== "function") throw new Error("Expected instance of class which extends utils.Hash");
-		this.blockLen = this.iHash.blockLen;
-		this.outputLen = this.iHash.outputLen;
-		const blockLen = this.blockLen;
-		const pad = new Uint8Array(blockLen);
-		pad.set(key.length > blockLen ? hash$1.create().update(key).digest() : key);
-		for (let i = 0; i < pad.length; i++) pad[i] ^= 54;
-		this.iHash.update(pad);
-		this.oHash = hash$1.create();
-		for (let i = 0; i < pad.length; i++) pad[i] ^= 106;
-		this.oHash.update(pad);
-		clean$1(pad);
-	}
-	update(buf) {
-		aexists$1(this);
-		this.iHash.update(buf);
-		return this;
-	}
-	digestInto(out) {
-		aexists$1(this);
-		aoutput$1(out, this);
-		this.finished = true;
-		const buf = out.subarray(0, this.outputLen);
-		this.iHash.digestInto(buf);
-		this.oHash.update(buf);
-		this.oHash.digestInto(buf);
-		this.destroy();
-	}
-	digest() {
-		const out = new Uint8Array(this.oHash.outputLen);
-		this.digestInto(out);
-		return out;
-	}
-	_cloneInto(to) {
-		to ||= Object.create(Object.getPrototypeOf(this), {});
-		const { oHash, iHash, finished, destroyed, blockLen, outputLen } = this;
-		to = to;
-		to.finished = finished;
-		to.destroyed = destroyed;
-		to.blockLen = blockLen;
-		to.outputLen = outputLen;
-		to.oHash = oHash._cloneInto(to.oHash);
-		to.iHash = iHash._cloneInto(to.iHash);
-		return to;
-	}
-	clone() {
-		return this._cloneInto();
-	}
-	destroy() {
-		this.destroyed = true;
-		this.oHash.destroy();
-		this.iHash.destroy();
-	}
-};
-const hmac = /* @__PURE__ */ (() => {
-	const hmac_ = ((hash$1, key, message$1) => new _HMAC(hash$1, key).update(message$1).digest());
-	hmac_.create = (hash$1, key) => new _HMAC(hash$1, key);
-	return hmac_;
-})();
-function extract(hash$1, ikm, salt) {
-	ahash(hash$1);
-	if (salt === void 0) salt = new Uint8Array(hash$1.outputLen);
-	return hmac(hash$1, salt, ikm);
-}
-var HKDF_COUNTER = /* @__PURE__ */ Uint8Array.of(0);
-var EMPTY_BUFFER$4 = /* @__PURE__ */ Uint8Array.of();
-function expand(hash$1, prk, info$1, length = 32) {
-	ahash(hash$1);
-	anumber$1(length, "length");
-	abytes$1(prk, void 0, "prk");
-	const olen = hash$1.outputLen;
-	if (prk.length < olen) throw new Error("\"prk\" must be at least HashLen octets");
-	if (length > 255 * olen) throw new Error("Length must be <= 255*HashLen");
-	const blocks = Math.ceil(length / olen);
-	if (info$1 === void 0) info$1 = EMPTY_BUFFER$4;
-	else abytes$1(info$1, void 0, "info");
-	const okm = new Uint8Array(blocks * olen);
-	const HMAC = hmac.create(hash$1, prk);
-	const HMACTmp = HMAC._cloneInto();
-	const T = new Uint8Array(HMAC.outputLen);
-	for (let counter = 0; counter < blocks; counter++) {
-		HKDF_COUNTER[0] = counter + 1;
-		HMACTmp.update(counter === 0 ? EMPTY_BUFFER$4 : T).update(info$1).update(HKDF_COUNTER).digestInto(T);
-		okm.set(T, olen * counter);
-		HMAC._cloneInto(HMACTmp);
-	}
-	HMAC.destroy();
-	HMACTmp.destroy();
-	clean$1(T, HKDF_COUNTER);
-	return okm.slice(0, length);
-}
-const hkdf = (hash$1, ikm, salt, info$1, length) => expand(hash$1, extract(hash$1, ikm, salt), info$1, length);
-function Chi(a, b, c) {
-	return a & b ^ ~a & c;
-}
-function Maj(a, b, c) {
-	return a & b ^ a & c ^ b & c;
-}
-var HashMD = class {
-	blockLen;
-	outputLen;
-	canXOF = false;
-	padOffset;
-	isLE;
-	buffer;
-	view;
-	finished = false;
-	length = 0;
-	pos = 0;
-	destroyed = false;
-	constructor(blockLen, outputLen, padOffset, isLE$1) {
-		this.blockLen = blockLen;
-		this.outputLen = outputLen;
-		this.padOffset = padOffset;
-		this.isLE = isLE$1;
-		this.buffer = new Uint8Array(blockLen);
-		this.view = createView$1(this.buffer);
-	}
-	update(data) {
-		aexists$1(this);
-		abytes$1(data);
-		const { view, buffer, blockLen } = this;
-		const len = data.length;
-		for (let pos = 0; pos < len;) {
-			const take = Math.min(blockLen - this.pos, len - pos);
-			if (take === blockLen) {
-				const dataView = createView$1(data);
-				for (; blockLen <= len - pos; pos += blockLen) this.process(dataView, pos);
-				continue;
-			}
-			buffer.set(data.subarray(pos, pos + take), this.pos);
-			this.pos += take;
-			pos += take;
-			if (this.pos === blockLen) {
-				this.process(view, 0);
-				this.pos = 0;
-			}
-		}
-		this.length += data.length;
-		this.roundClean();
-		return this;
-	}
-	digestInto(out) {
-		aexists$1(this);
-		aoutput$1(out, this);
-		this.finished = true;
-		const { buffer, view, blockLen, isLE: isLE$1 } = this;
-		let { pos } = this;
-		buffer[pos++] = 128;
-		clean$1(this.buffer.subarray(pos));
-		if (this.padOffset > blockLen - pos) {
-			this.process(view, 0);
-			pos = 0;
-		}
-		for (let i = pos; i < blockLen; i++) buffer[i] = 0;
-		view.setBigUint64(blockLen - 8, BigInt(this.length * 8), isLE$1);
-		this.process(view, 0);
-		const oview = createView$1(out);
-		const len = this.outputLen;
-		if (len % 4) throw new Error("_sha2: outputLen must be aligned to 32bit");
-		const outLen = len / 4;
-		const state = this.get();
-		if (outLen > state.length) throw new Error("_sha2: outputLen bigger than state");
-		for (let i = 0; i < outLen; i++) oview.setUint32(4 * i, state[i], isLE$1);
-	}
-	digest() {
-		const { buffer, outputLen } = this;
-		this.digestInto(buffer);
-		const res = buffer.slice(0, outputLen);
-		this.destroy();
-		return res;
-	}
-	_cloneInto(to) {
-		to ||= new this.constructor();
-		to.set(...this.get());
-		const { blockLen, buffer, length, finished, destroyed, pos } = this;
-		to.destroyed = destroyed;
-		to.finished = finished;
-		to.length = length;
-		to.pos = pos;
-		if (length % blockLen) to.buffer.set(buffer);
-		return to;
-	}
-	clone() {
-		return this._cloneInto();
-	}
-};
-const SHA256_IV = /* @__PURE__ */ Uint32Array.from([
-	1779033703,
-	3144134277,
-	1013904242,
-	2773480762,
-	1359893119,
-	2600822924,
-	528734635,
-	1541459225
-]);
-var SHA256_K = /* @__PURE__ */ Uint32Array.from([
-	1116352408,
-	1899447441,
-	3049323471,
-	3921009573,
-	961987163,
-	1508970993,
-	2453635748,
-	2870763221,
-	3624381080,
-	310598401,
-	607225278,
-	1426881987,
-	1925078388,
-	2162078206,
-	2614888103,
-	3248222580,
-	3835390401,
-	4022224774,
-	264347078,
-	604807628,
-	770255983,
-	1249150122,
-	1555081692,
-	1996064986,
-	2554220882,
-	2821834349,
-	2952996808,
-	3210313671,
-	3336571891,
-	3584528711,
-	113926993,
-	338241895,
-	666307205,
-	773529912,
-	1294757372,
-	1396182291,
-	1695183700,
-	1986661051,
-	2177026350,
-	2456956037,
-	2730485921,
-	2820302411,
-	3259730800,
-	3345764771,
-	3516065817,
-	3600352804,
-	4094571909,
-	275423344,
-	430227734,
-	506948616,
-	659060556,
-	883997877,
-	958139571,
-	1322822218,
-	1537002063,
-	1747873779,
-	1955562222,
-	2024104815,
-	2227730452,
-	2361852424,
-	2428436474,
-	2756734187,
-	3204031479,
-	3329325298
-]);
-var SHA256_W = /* @__PURE__ */ new Uint32Array(64);
-var SHA2_32B = class extends HashMD {
-	constructor(outputLen) {
-		super(64, outputLen, 8, false);
-	}
-	get() {
-		const { A, B, C, D, E, F, G, H } = this;
-		return [
-			A,
-			B,
-			C,
-			D,
-			E,
-			F,
-			G,
-			H
-		];
-	}
-	set(A, B, C, D, E, F, G, H) {
-		this.A = A | 0;
-		this.B = B | 0;
-		this.C = C | 0;
-		this.D = D | 0;
-		this.E = E | 0;
-		this.F = F | 0;
-		this.G = G | 0;
-		this.H = H | 0;
-	}
-	process(view, offset) {
-		for (let i = 0; i < 16; i++, offset += 4) SHA256_W[i] = view.getUint32(offset, false);
-		for (let i = 16; i < 64; i++) {
-			const W15 = SHA256_W[i - 15];
-			const W2 = SHA256_W[i - 2];
-			const s0 = rotr(W15, 7) ^ rotr(W15, 18) ^ W15 >>> 3;
-			SHA256_W[i] = (rotr(W2, 17) ^ rotr(W2, 19) ^ W2 >>> 10) + SHA256_W[i - 7] + s0 + SHA256_W[i - 16] | 0;
-		}
-		let { A, B, C, D, E, F, G, H } = this;
-		for (let i = 0; i < 64; i++) {
-			const sigma1 = rotr(E, 6) ^ rotr(E, 11) ^ rotr(E, 25);
-			const T1 = H + sigma1 + Chi(E, F, G) + SHA256_K[i] + SHA256_W[i] | 0;
-			const T2 = (rotr(A, 2) ^ rotr(A, 13) ^ rotr(A, 22)) + Maj(A, B, C) | 0;
-			H = G;
-			G = F;
-			F = E;
-			E = D + T1 | 0;
-			D = C;
-			C = B;
-			B = A;
-			A = T1 + T2 | 0;
-		}
-		A = A + this.A | 0;
-		B = B + this.B | 0;
-		C = C + this.C | 0;
-		D = D + this.D | 0;
-		E = E + this.E | 0;
-		F = F + this.F | 0;
-		G = G + this.G | 0;
-		H = H + this.H | 0;
-		this.set(A, B, C, D, E, F, G, H);
-	}
-	roundClean() {
-		clean$1(SHA256_W);
-	}
-	destroy() {
-		this.destroyed = true;
-		this.set(0, 0, 0, 0, 0, 0, 0, 0);
-		clean$1(this.buffer);
-	}
-};
-var _SHA256 = class extends SHA2_32B {
-	A = SHA256_IV[0] | 0;
-	B = SHA256_IV[1] | 0;
-	C = SHA256_IV[2] | 0;
-	D = SHA256_IV[3] | 0;
-	E = SHA256_IV[4] | 0;
-	F = SHA256_IV[5] | 0;
-	G = SHA256_IV[6] | 0;
-	H = SHA256_IV[7] | 0;
-	constructor() {
-		super(32);
-	}
-};
-const sha256 = /* @__PURE__ */ createHasher(() => new _SHA256(), /* @__PURE__ */ oidNist(1));
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-var MAX_INT32 = 2 ** 32;
-function concat$2(...buffers) {
-	const size = buffers.reduce((acc, { length }) => acc + length, 0);
-	const buf = new Uint8Array(size);
-	let i = 0;
-	for (const buffer of buffers) {
-		buf.set(buffer, i);
-		i += buffer.length;
-	}
-	return buf;
-}
-function writeUInt32BE(buf, value, offset) {
-	if (value < 0 || value >= MAX_INT32) throw new RangeError(`value must be >= 0 and <= ${MAX_INT32 - 1}. Received ${value}`);
-	buf.set([
-		value >>> 24,
-		value >>> 16,
-		value >>> 8,
-		value & 255
-	], offset);
-}
-function uint64be(value) {
-	const high = Math.floor(value / MAX_INT32);
-	const low = value % MAX_INT32;
-	const buf = new Uint8Array(8);
-	writeUInt32BE(buf, high, 0);
-	writeUInt32BE(buf, low, 4);
-	return buf;
-}
-function uint32be(value) {
-	const buf = new Uint8Array(4);
-	writeUInt32BE(buf, value);
-	return buf;
-}
-function encode$2(string$4) {
-	const bytes = new Uint8Array(string$4.length);
-	for (let i = 0; i < string$4.length; i++) {
-		const code = string$4.charCodeAt(i);
-		if (code > 127) throw new TypeError("non-ASCII string encountered in encode()");
-		bytes[i] = code;
-	}
-	return bytes;
-}
-function encodeBase64(input) {
-	if (Uint8Array.prototype.toBase64) return input.toBase64();
-	const CHUNK_SIZE$1 = 32768;
-	const arr = [];
-	for (let i = 0; i < input.length; i += CHUNK_SIZE$1) arr.push(String.fromCharCode.apply(null, input.subarray(i, i + CHUNK_SIZE$1)));
-	return btoa(arr.join(""));
-}
-function decodeBase64(encoded) {
-	if (Uint8Array.fromBase64) return Uint8Array.fromBase64(encoded);
-	const binary$1 = atob(encoded);
-	const bytes = new Uint8Array(binary$1.length);
-	for (let i = 0; i < binary$1.length; i++) bytes[i] = binary$1.charCodeAt(i);
-	return bytes;
-}
-function decode$1(input) {
-	if (Uint8Array.fromBase64) return Uint8Array.fromBase64(typeof input === "string" ? input : decoder.decode(input), { alphabet: "base64url" });
-	let encoded = input;
-	if (encoded instanceof Uint8Array) encoded = decoder.decode(encoded);
-	encoded = encoded.replace(/-/g, "+").replace(/_/g, "/");
-	try {
-		return decodeBase64(encoded);
-	} catch {
-		throw new TypeError("The input to be decoded is not correctly encoded.");
-	}
-}
-function encode$1(input) {
-	let unencoded = input;
-	if (typeof unencoded === "string") unencoded = encoder.encode(unencoded);
-	if (Uint8Array.prototype.toBase64) return unencoded.toBase64({
-		alphabet: "base64url",
-		omitPadding: true
-	});
-	return encodeBase64(unencoded).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
-}
-var unusable = (name, prop = "algorithm.name") => /* @__PURE__ */ new TypeError(`CryptoKey does not support this operation, its ${prop} must be ${name}`);
-var isAlgorithm = (algorithm$1, name) => algorithm$1.name === name;
-function getHashLength(hash$1) {
-	return parseInt(hash$1.name.slice(4), 10);
-}
-function checkHashLength(algorithm$1, expected) {
-	if (getHashLength(algorithm$1.hash) !== expected) throw unusable(`SHA-${expected}`, "algorithm.hash");
-}
-function getNamedCurve(alg$1) {
-	switch (alg$1) {
-		case "ES256": return "P-256";
-		case "ES384": return "P-384";
-		case "ES512": return "P-521";
-		default: throw new Error("unreachable");
-	}
-}
-function checkUsage(key, usage) {
-	if (usage && !key.usages.includes(usage)) throw new TypeError(`CryptoKey does not support this operation, its usages must include ${usage}.`);
-}
-function checkSigCryptoKey(key, alg$1, usage) {
-	switch (alg$1) {
-		case "HS256":
-		case "HS384":
-		case "HS512":
-			if (!isAlgorithm(key.algorithm, "HMAC")) throw unusable("HMAC");
-			checkHashLength(key.algorithm, parseInt(alg$1.slice(2), 10));
-			break;
-		case "RS256":
-		case "RS384":
-		case "RS512":
-			if (!isAlgorithm(key.algorithm, "RSASSA-PKCS1-v1_5")) throw unusable("RSASSA-PKCS1-v1_5");
-			checkHashLength(key.algorithm, parseInt(alg$1.slice(2), 10));
-			break;
-		case "PS256":
-		case "PS384":
-		case "PS512":
-			if (!isAlgorithm(key.algorithm, "RSA-PSS")) throw unusable("RSA-PSS");
-			checkHashLength(key.algorithm, parseInt(alg$1.slice(2), 10));
-			break;
-		case "Ed25519":
-		case "EdDSA":
-			if (!isAlgorithm(key.algorithm, "Ed25519")) throw unusable("Ed25519");
-			break;
-		case "ML-DSA-44":
-		case "ML-DSA-65":
-		case "ML-DSA-87":
-			if (!isAlgorithm(key.algorithm, alg$1)) throw unusable(alg$1);
-			break;
-		case "ES256":
-		case "ES384":
-		case "ES512": {
-			if (!isAlgorithm(key.algorithm, "ECDSA")) throw unusable("ECDSA");
-			const expected = getNamedCurve(alg$1);
-			if (key.algorithm.namedCurve !== expected) throw unusable(expected, "algorithm.namedCurve");
-			break;
-		}
-		default: throw new TypeError("CryptoKey does not support this operation");
-	}
-	checkUsage(key, usage);
-}
-function checkEncCryptoKey(key, alg$1, usage) {
-	switch (alg$1) {
-		case "A128GCM":
-		case "A192GCM":
-		case "A256GCM": {
-			if (!isAlgorithm(key.algorithm, "AES-GCM")) throw unusable("AES-GCM");
-			const expected = parseInt(alg$1.slice(1, 4), 10);
-			if (key.algorithm.length !== expected) throw unusable(expected, "algorithm.length");
-			break;
-		}
-		case "A128KW":
-		case "A192KW":
-		case "A256KW": {
-			if (!isAlgorithm(key.algorithm, "AES-KW")) throw unusable("AES-KW");
-			const expected = parseInt(alg$1.slice(1, 4), 10);
-			if (key.algorithm.length !== expected) throw unusable(expected, "algorithm.length");
-			break;
-		}
-		case "ECDH":
-			switch (key.algorithm.name) {
-				case "ECDH":
-				case "X25519": break;
-				default: throw unusable("ECDH or X25519");
-			}
-			break;
-		case "PBES2-HS256+A128KW":
-		case "PBES2-HS384+A192KW":
-		case "PBES2-HS512+A256KW":
-			if (!isAlgorithm(key.algorithm, "PBKDF2")) throw unusable("PBKDF2");
-			break;
-		case "RSA-OAEP":
-		case "RSA-OAEP-256":
-		case "RSA-OAEP-384":
-		case "RSA-OAEP-512":
-			if (!isAlgorithm(key.algorithm, "RSA-OAEP")) throw unusable("RSA-OAEP");
-			checkHashLength(key.algorithm, parseInt(alg$1.slice(9), 10) || 1);
-			break;
-		default: throw new TypeError("CryptoKey does not support this operation");
-	}
-	checkUsage(key, usage);
-}
-function message(msg, actual, ...types) {
-	types = types.filter(Boolean);
-	if (types.length > 2) {
-		const last = types.pop();
-		msg += `one of type ${types.join(", ")}, or ${last}.`;
-	} else if (types.length === 2) msg += `one of type ${types[0]} or ${types[1]}.`;
-	else msg += `of type ${types[0]}.`;
-	if (actual == null) msg += ` Received ${actual}`;
-	else if (typeof actual === "function" && actual.name) msg += ` Received function ${actual.name}`;
-	else if (typeof actual === "object" && actual != null) {
-		if (actual.constructor?.name) msg += ` Received an instance of ${actual.constructor.name}`;
-	}
-	return msg;
-}
-const invalidKeyInput = (actual, ...types) => message("Key must be ", actual, ...types);
-const withAlg = (alg$1, actual, ...types) => message(`Key for the ${alg$1} algorithm must be `, actual, ...types);
-var JOSEError = class extends Error {
-	static code = "ERR_JOSE_GENERIC";
-	code = "ERR_JOSE_GENERIC";
-	constructor(message$1, options) {
-		super(message$1, options);
-		this.name = this.constructor.name;
-		Error.captureStackTrace?.(this, this.constructor);
-	}
-};
-var JWTClaimValidationFailed = class extends JOSEError {
-	static code = "ERR_JWT_CLAIM_VALIDATION_FAILED";
-	code = "ERR_JWT_CLAIM_VALIDATION_FAILED";
-	claim;
-	reason;
-	payload;
-	constructor(message$1, payload, claim = "unspecified", reason = "unspecified") {
-		super(message$1, { cause: {
-			claim,
-			reason,
-			payload
-		} });
-		this.claim = claim;
-		this.reason = reason;
-		this.payload = payload;
-	}
-};
-var JWTExpired = class extends JOSEError {
-	static code = "ERR_JWT_EXPIRED";
-	code = "ERR_JWT_EXPIRED";
-	claim;
-	reason;
-	payload;
-	constructor(message$1, payload, claim = "unspecified", reason = "unspecified") {
-		super(message$1, { cause: {
-			claim,
-			reason,
-			payload
-		} });
-		this.claim = claim;
-		this.reason = reason;
-		this.payload = payload;
-	}
-};
-var JOSEAlgNotAllowed = class extends JOSEError {
-	static code = "ERR_JOSE_ALG_NOT_ALLOWED";
-	code = "ERR_JOSE_ALG_NOT_ALLOWED";
-};
-var JOSENotSupported = class extends JOSEError {
-	static code = "ERR_JOSE_NOT_SUPPORTED";
-	code = "ERR_JOSE_NOT_SUPPORTED";
-};
-var JWEDecryptionFailed = class extends JOSEError {
-	static code = "ERR_JWE_DECRYPTION_FAILED";
-	code = "ERR_JWE_DECRYPTION_FAILED";
-	constructor(message$1 = "decryption operation failed", options) {
-		super(message$1, options);
-	}
-};
-var JWEInvalid = class extends JOSEError {
-	static code = "ERR_JWE_INVALID";
-	code = "ERR_JWE_INVALID";
-};
-var JWSInvalid = class extends JOSEError {
-	static code = "ERR_JWS_INVALID";
-	code = "ERR_JWS_INVALID";
-};
-var JWTInvalid = class extends JOSEError {
-	static code = "ERR_JWT_INVALID";
-	code = "ERR_JWT_INVALID";
-};
-var JWKInvalid = class extends JOSEError {
-	static code = "ERR_JWK_INVALID";
-	code = "ERR_JWK_INVALID";
-};
-var JWKSInvalid = class extends JOSEError {
-	static code = "ERR_JWKS_INVALID";
-	code = "ERR_JWKS_INVALID";
-};
-var JWKSNoMatchingKey = class extends JOSEError {
-	static code = "ERR_JWKS_NO_MATCHING_KEY";
-	code = "ERR_JWKS_NO_MATCHING_KEY";
-	constructor(message$1 = "no applicable key found in the JSON Web Key Set", options) {
-		super(message$1, options);
-	}
-};
-var JWKSMultipleMatchingKeys = class extends JOSEError {
-	[Symbol.asyncIterator];
-	static code = "ERR_JWKS_MULTIPLE_MATCHING_KEYS";
-	code = "ERR_JWKS_MULTIPLE_MATCHING_KEYS";
-	constructor(message$1 = "multiple matching keys found in the JSON Web Key Set", options) {
-		super(message$1, options);
-	}
-};
-var JWKSTimeout = class extends JOSEError {
-	static code = "ERR_JWKS_TIMEOUT";
-	code = "ERR_JWKS_TIMEOUT";
-	constructor(message$1 = "request timed out", options) {
-		super(message$1, options);
-	}
-};
-var JWSSignatureVerificationFailed = class extends JOSEError {
-	static code = "ERR_JWS_SIGNATURE_VERIFICATION_FAILED";
-	code = "ERR_JWS_SIGNATURE_VERIFICATION_FAILED";
-	constructor(message$1 = "signature verification failed", options) {
-		super(message$1, options);
-	}
-};
-function assertCryptoKey(key) {
-	if (!isCryptoKey(key)) throw new Error("CryptoKey instance expected");
-}
-const isCryptoKey = (key) => {
-	if (key?.[Symbol.toStringTag] === "CryptoKey") return true;
-	try {
-		return key instanceof CryptoKey;
-	} catch {
-		return false;
-	}
-};
-const isKeyObject = (key) => key?.[Symbol.toStringTag] === "KeyObject";
-const isKeyLike = (key) => isCryptoKey(key) || isKeyObject(key);
-function cekLength(alg$1) {
-	switch (alg$1) {
-		case "A128GCM": return 128;
-		case "A192GCM": return 192;
-		case "A256GCM":
-		case "A128CBC-HS256": return 256;
-		case "A192CBC-HS384": return 384;
-		case "A256CBC-HS512": return 512;
-		default: throw new JOSENotSupported(`Unsupported JWE Algorithm: ${alg$1}`);
-	}
-}
-const generateCek = (alg$1) => crypto.getRandomValues(new Uint8Array(cekLength(alg$1) >> 3));
-function checkCekLength(cek, expected) {
-	const actual = cek.byteLength << 3;
-	if (actual !== expected) throw new JWEInvalid(`Invalid Content Encryption Key length. Expected ${expected} bits, got ${actual} bits`);
-}
-function ivBitLength(alg$1) {
-	switch (alg$1) {
-		case "A128GCM":
-		case "A128GCMKW":
-		case "A192GCM":
-		case "A192GCMKW":
-		case "A256GCM":
-		case "A256GCMKW": return 96;
-		case "A128CBC-HS256":
-		case "A192CBC-HS384":
-		case "A256CBC-HS512": return 128;
-		default: throw new JOSENotSupported(`Unsupported JWE Algorithm: ${alg$1}`);
-	}
-}
-const generateIv = (alg$1) => crypto.getRandomValues(new Uint8Array(ivBitLength(alg$1) >> 3));
-function checkIvLength(enc$1, iv) {
-	if (iv.length << 3 !== ivBitLength(enc$1)) throw new JWEInvalid("Invalid Initialization Vector length");
-}
-async function cbcKeySetup(enc$1, cek, usage) {
-	if (!(cek instanceof Uint8Array)) throw new TypeError(invalidKeyInput(cek, "Uint8Array"));
-	const keySize = parseInt(enc$1.slice(1, 4), 10);
-	return {
-		encKey: await crypto.subtle.importKey("raw", cek.subarray(keySize >> 3), "AES-CBC", false, [usage]),
-		macKey: await crypto.subtle.importKey("raw", cek.subarray(0, keySize >> 3), {
-			hash: `SHA-${keySize << 1}`,
-			name: "HMAC"
-		}, false, ["sign"]),
-		keySize
-	};
-}
-async function cbcHmacTag(macKey, macData, keySize) {
-	return new Uint8Array((await crypto.subtle.sign("HMAC", macKey, macData)).slice(0, keySize >> 3));
-}
-async function cbcEncrypt(enc$1, plaintext, cek, iv, aad) {
-	const { encKey, macKey, keySize } = await cbcKeySetup(enc$1, cek, "encrypt");
-	const ciphertext = new Uint8Array(await crypto.subtle.encrypt({
-		iv,
-		name: "AES-CBC"
-	}, encKey, plaintext));
-	return {
-		ciphertext,
-		tag: await cbcHmacTag(macKey, concat$2(aad, iv, ciphertext, uint64be(aad.length << 3)), keySize),
-		iv
-	};
-}
-async function timingSafeEqual$1(a, b) {
-	if (!(a instanceof Uint8Array)) throw new TypeError("First argument must be a buffer");
-	if (!(b instanceof Uint8Array)) throw new TypeError("Second argument must be a buffer");
-	const algorithm$1 = {
-		name: "HMAC",
-		hash: "SHA-256"
-	};
-	const key = await crypto.subtle.generateKey(algorithm$1, false, ["sign"]);
-	const aHmac = new Uint8Array(await crypto.subtle.sign(algorithm$1, key, a));
-	const bHmac = new Uint8Array(await crypto.subtle.sign(algorithm$1, key, b));
-	let out = 0;
-	let i = -1;
-	while (++i < 32) out |= aHmac[i] ^ bHmac[i];
-	return out === 0;
-}
-async function cbcDecrypt(enc$1, cek, ciphertext, iv, tag$1, aad) {
-	const { encKey, macKey, keySize } = await cbcKeySetup(enc$1, cek, "decrypt");
-	const expectedTag = await cbcHmacTag(macKey, concat$2(aad, iv, ciphertext, uint64be(aad.length << 3)), keySize);
-	let macCheckPassed;
-	try {
-		macCheckPassed = await timingSafeEqual$1(tag$1, expectedTag);
-	} catch {}
-	if (!macCheckPassed) throw new JWEDecryptionFailed();
-	let plaintext;
-	try {
-		plaintext = new Uint8Array(await crypto.subtle.decrypt({
-			iv,
-			name: "AES-CBC"
-		}, encKey, ciphertext));
-	} catch {}
-	if (!plaintext) throw new JWEDecryptionFailed();
-	return plaintext;
-}
-async function gcmEncrypt(enc$1, plaintext, cek, iv, aad) {
-	let encKey;
-	if (cek instanceof Uint8Array) encKey = await crypto.subtle.importKey("raw", cek, "AES-GCM", false, ["encrypt"]);
-	else {
-		checkEncCryptoKey(cek, enc$1, "encrypt");
-		encKey = cek;
-	}
-	const encrypted = new Uint8Array(await crypto.subtle.encrypt({
-		additionalData: aad,
-		iv,
-		name: "AES-GCM",
-		tagLength: 128
-	}, encKey, plaintext));
-	const tag$1 = encrypted.slice(-16);
-	return {
-		ciphertext: encrypted.slice(0, -16),
-		tag: tag$1,
-		iv
-	};
-}
-async function gcmDecrypt(enc$1, cek, ciphertext, iv, tag$1, aad) {
-	let encKey;
-	if (cek instanceof Uint8Array) encKey = await crypto.subtle.importKey("raw", cek, "AES-GCM", false, ["decrypt"]);
-	else {
-		checkEncCryptoKey(cek, enc$1, "decrypt");
-		encKey = cek;
-	}
-	try {
-		return new Uint8Array(await crypto.subtle.decrypt({
-			additionalData: aad,
-			iv,
-			name: "AES-GCM",
-			tagLength: 128
-		}, encKey, concat$2(ciphertext, tag$1)));
-	} catch {
-		throw new JWEDecryptionFailed();
-	}
-}
-var unsupportedEnc = "Unsupported JWE Content Encryption Algorithm";
-async function encrypt(enc$1, plaintext, cek, iv, aad) {
-	if (!isCryptoKey(cek) && !(cek instanceof Uint8Array)) throw new TypeError(invalidKeyInput(cek, "CryptoKey", "KeyObject", "Uint8Array", "JSON Web Key"));
-	if (iv) checkIvLength(enc$1, iv);
-	else iv = generateIv(enc$1);
-	switch (enc$1) {
-		case "A128CBC-HS256":
-		case "A192CBC-HS384":
-		case "A256CBC-HS512":
-			if (cek instanceof Uint8Array) checkCekLength(cek, parseInt(enc$1.slice(-3), 10));
-			return cbcEncrypt(enc$1, plaintext, cek, iv, aad);
-		case "A128GCM":
-		case "A192GCM":
-		case "A256GCM":
-			if (cek instanceof Uint8Array) checkCekLength(cek, parseInt(enc$1.slice(1, 4), 10));
-			return gcmEncrypt(enc$1, plaintext, cek, iv, aad);
-		default: throw new JOSENotSupported(unsupportedEnc);
-	}
-}
-async function decrypt(enc$1, cek, ciphertext, iv, tag$1, aad) {
-	if (!isCryptoKey(cek) && !(cek instanceof Uint8Array)) throw new TypeError(invalidKeyInput(cek, "CryptoKey", "KeyObject", "Uint8Array", "JSON Web Key"));
-	if (!iv) throw new JWEInvalid("JWE Initialization Vector missing");
-	if (!tag$1) throw new JWEInvalid("JWE Authentication Tag missing");
-	checkIvLength(enc$1, iv);
-	switch (enc$1) {
-		case "A128CBC-HS256":
-		case "A192CBC-HS384":
-		case "A256CBC-HS512":
-			if (cek instanceof Uint8Array) checkCekLength(cek, parseInt(enc$1.slice(-3), 10));
-			return cbcDecrypt(enc$1, cek, ciphertext, iv, tag$1, aad);
-		case "A128GCM":
-		case "A192GCM":
-		case "A256GCM":
-			if (cek instanceof Uint8Array) checkCekLength(cek, parseInt(enc$1.slice(1, 4), 10));
-			return gcmDecrypt(enc$1, cek, ciphertext, iv, tag$1, aad);
-		default: throw new JOSENotSupported(unsupportedEnc);
-	}
-}
-const unprotected = Symbol();
-function assertNotSet(value, name) {
-	if (value) throw new TypeError(`${name} can only be called once`);
-}
-function decodeBase64url(value, label, ErrorClass) {
-	try {
-		return decode$1(value);
-	} catch {
-		throw new ErrorClass(`Failed to base64url decode the ${label}`);
-	}
-}
-async function digest(algorithm$1, data) {
-	const subtleDigest = `SHA-${algorithm$1.slice(-3)}`;
-	return new Uint8Array(await crypto.subtle.digest(subtleDigest, data));
-}
-var isObjectLike = (value) => typeof value === "object" && value !== null;
-function isObject(input) {
-	if (!isObjectLike(input) || Object.prototype.toString.call(input) !== "[object Object]") return false;
-	if (Object.getPrototypeOf(input) === null) return true;
-	let proto = input;
-	while (Object.getPrototypeOf(proto) !== null) proto = Object.getPrototypeOf(proto);
-	return Object.getPrototypeOf(input) === proto;
-}
-function isDisjoint(...headers) {
-	const sources = headers.filter(Boolean);
-	if (sources.length === 0 || sources.length === 1) return true;
-	let acc;
-	for (const header of sources) {
-		const parameters = Object.keys(header);
-		if (!acc || acc.size === 0) {
-			acc = new Set(parameters);
-			continue;
-		}
-		for (const parameter of parameters) {
-			if (acc.has(parameter)) return false;
-			acc.add(parameter);
-		}
-	}
-	return true;
-}
-const isJWK = (key) => isObject(key) && typeof key.kty === "string";
-const isPrivateJWK = (key) => key.kty !== "oct" && (key.kty === "AKP" && typeof key.priv === "string" || typeof key.d === "string");
-const isPublicJWK = (key) => key.kty !== "oct" && key.d === void 0 && key.priv === void 0;
-const isSecretJWK = (key) => key.kty === "oct" && typeof key.k === "string";
-function checkKeySize(key, alg$1) {
-	if (key.algorithm.length !== parseInt(alg$1.slice(1, 4), 10)) throw new TypeError(`Invalid key size for alg: ${alg$1}`);
-}
-function getCryptoKey$2(key, alg$1, usage) {
-	if (key instanceof Uint8Array) return crypto.subtle.importKey("raw", key, "AES-KW", true, [usage]);
-	checkEncCryptoKey(key, alg$1, usage);
-	return key;
-}
-async function wrap$2(alg$1, key, cek) {
-	const cryptoKey = await getCryptoKey$2(key, alg$1, "wrapKey");
-	checkKeySize(cryptoKey, alg$1);
-	const cryptoKeyCek = await crypto.subtle.importKey("raw", cek, {
-		hash: "SHA-256",
-		name: "HMAC"
-	}, true, ["sign"]);
-	return new Uint8Array(await crypto.subtle.wrapKey("raw", cryptoKeyCek, cryptoKey, "AES-KW"));
-}
-async function unwrap$2(alg$1, key, encryptedKey) {
-	const cryptoKey = await getCryptoKey$2(key, alg$1, "unwrapKey");
-	checkKeySize(cryptoKey, alg$1);
-	const cryptoKeyCek = await crypto.subtle.unwrapKey("raw", encryptedKey, cryptoKey, "AES-KW", {
-		hash: "SHA-256",
-		name: "HMAC"
-	}, true, ["sign"]);
-	return new Uint8Array(await crypto.subtle.exportKey("raw", cryptoKeyCek));
-}
-function lengthAndInput(input) {
-	return concat$2(uint32be(input.length), input);
-}
-async function concatKdf(Z, L, OtherInfo) {
-	const dkLen = L >> 3;
-	const hashLen = 32;
-	const reps = Math.ceil(dkLen / hashLen);
-	const dk = new Uint8Array(reps * hashLen);
-	for (let i = 1; i <= reps; i++) {
-		const hashInput = new Uint8Array(4 + Z.length + OtherInfo.length);
-		hashInput.set(uint32be(i), 0);
-		hashInput.set(Z, 4);
-		hashInput.set(OtherInfo, 4 + Z.length);
-		const hashResult = await digest("sha256", hashInput);
-		dk.set(hashResult, (i - 1) * hashLen);
-	}
-	return dk.slice(0, dkLen);
-}
-async function deriveKey$1(publicKey, privateKey, algorithm$1, keyLength, apu = new Uint8Array(), apv = new Uint8Array()) {
-	checkEncCryptoKey(publicKey, "ECDH");
-	checkEncCryptoKey(privateKey, "ECDH", "deriveBits");
-	const otherInfo = concat$2(lengthAndInput(encode$2(algorithm$1)), lengthAndInput(apu), lengthAndInput(apv), uint32be(keyLength), new Uint8Array());
-	return concatKdf(new Uint8Array(await crypto.subtle.deriveBits({
-		name: publicKey.algorithm.name,
-		public: publicKey
-	}, privateKey, getEcdhBitLength(publicKey))), keyLength, otherInfo);
-}
-function getEcdhBitLength(publicKey) {
-	if (publicKey.algorithm.name === "X25519") return 256;
-	return Math.ceil(parseInt(publicKey.algorithm.namedCurve.slice(-3), 10) / 8) << 3;
-}
-function allowed(key) {
-	switch (key.algorithm.namedCurve) {
-		case "P-256":
-		case "P-384":
-		case "P-521": return true;
-		default: return key.algorithm.name === "X25519";
-	}
-}
-function getCryptoKey$1(key, alg$1) {
-	if (key instanceof Uint8Array) return crypto.subtle.importKey("raw", key, "PBKDF2", false, ["deriveBits"]);
-	checkEncCryptoKey(key, alg$1, "deriveBits");
-	return key;
-}
-var concatSalt = (alg$1, p2sInput) => concat$2(encode$2(alg$1), Uint8Array.of(0), p2sInput);
-async function deriveKey(p2s, alg$1, p2c, key) {
-	if (!(p2s instanceof Uint8Array) || p2s.length < 8) throw new JWEInvalid("PBES2 Salt Input must be 8 or more octets");
-	if (!Number.isSafeInteger(p2c) || Math.sign(p2c) !== 1) throw new JWEInvalid("PBES2 Count Input must be a positive integer");
-	const salt = concatSalt(alg$1, p2s);
-	const keylen = parseInt(alg$1.slice(13, 16), 10);
-	const subtleAlg = {
-		hash: `SHA-${alg$1.slice(8, 11)}`,
-		iterations: p2c,
-		name: "PBKDF2",
-		salt
-	};
-	const cryptoKey = await getCryptoKey$1(key, alg$1);
-	return new Uint8Array(await crypto.subtle.deriveBits(subtleAlg, cryptoKey, keylen));
-}
-async function wrap$1(alg$1, key, cek, p2c = 2048, p2s = crypto.getRandomValues(new Uint8Array(16))) {
-	const derived = await deriveKey(p2s, alg$1, p2c, key);
-	return {
-		encryptedKey: await wrap$2(alg$1.slice(-6), derived, cek),
-		p2c,
-		p2s: encode$1(p2s)
-	};
-}
-async function unwrap$1(alg$1, key, encryptedKey, p2c, p2s) {
-	const derived = await deriveKey(p2s, alg$1, p2c, key);
-	return unwrap$2(alg$1.slice(-6), derived, encryptedKey);
-}
-function checkKeyLength(alg$1, key) {
-	if (alg$1.startsWith("RS") || alg$1.startsWith("PS")) {
-		const { modulusLength } = key.algorithm;
-		if (typeof modulusLength !== "number" || modulusLength < 2048) throw new TypeError(`${alg$1} requires key modulusLength to be 2048 bits or larger`);
-	}
-}
-function subtleAlgorithm$1(alg$1, algorithm$1) {
-	const hash$1 = `SHA-${alg$1.slice(-3)}`;
-	switch (alg$1) {
-		case "HS256":
-		case "HS384":
-		case "HS512": return {
-			hash: hash$1,
-			name: "HMAC"
-		};
-		case "PS256":
-		case "PS384":
-		case "PS512": return {
-			hash: hash$1,
-			name: "RSA-PSS",
-			saltLength: parseInt(alg$1.slice(-3), 10) >> 3
-		};
-		case "RS256":
-		case "RS384":
-		case "RS512": return {
-			hash: hash$1,
-			name: "RSASSA-PKCS1-v1_5"
-		};
-		case "ES256":
-		case "ES384":
-		case "ES512": return {
-			hash: hash$1,
-			name: "ECDSA",
-			namedCurve: algorithm$1.namedCurve
-		};
-		case "Ed25519":
-		case "EdDSA": return { name: "Ed25519" };
-		case "ML-DSA-44":
-		case "ML-DSA-65":
-		case "ML-DSA-87": return { name: alg$1 };
-		default: throw new JOSENotSupported(`alg ${alg$1} is not supported either by JOSE or your javascript runtime`);
-	}
-}
-async function getSigKey(alg$1, key, usage) {
-	if (key instanceof Uint8Array) {
-		if (!alg$1.startsWith("HS")) throw new TypeError(invalidKeyInput(key, "CryptoKey", "KeyObject", "JSON Web Key"));
-		return crypto.subtle.importKey("raw", key, {
-			hash: `SHA-${alg$1.slice(-3)}`,
-			name: "HMAC"
-		}, false, [usage]);
-	}
-	checkSigCryptoKey(key, alg$1, usage);
-	return key;
-}
-async function sign(alg$1, key, data) {
-	const cryptoKey = await getSigKey(alg$1, key, "sign");
-	checkKeyLength(alg$1, cryptoKey);
-	const signature = await crypto.subtle.sign(subtleAlgorithm$1(alg$1, cryptoKey.algorithm), cryptoKey, data);
-	return new Uint8Array(signature);
-}
-async function verify(alg$1, key, signature, data) {
-	const cryptoKey = await getSigKey(alg$1, key, "verify");
-	checkKeyLength(alg$1, cryptoKey);
-	const algorithm$1 = subtleAlgorithm$1(alg$1, cryptoKey.algorithm);
-	try {
-		return await crypto.subtle.verify(algorithm$1, cryptoKey, signature, data);
-	} catch {
-		return false;
-	}
-}
-var subtleAlgorithm = (alg$1) => {
-	switch (alg$1) {
-		case "RSA-OAEP":
-		case "RSA-OAEP-256":
-		case "RSA-OAEP-384":
-		case "RSA-OAEP-512": return "RSA-OAEP";
-		default: throw new JOSENotSupported(`alg ${alg$1} is not supported either by JOSE or your javascript runtime`);
-	}
-};
-async function encrypt$1(alg$1, key, cek) {
-	checkEncCryptoKey(key, alg$1, "encrypt");
-	checkKeyLength(alg$1, key);
-	return new Uint8Array(await crypto.subtle.encrypt(subtleAlgorithm(alg$1), key, cek));
-}
-async function decrypt$1(alg$1, key, encryptedKey) {
-	checkEncCryptoKey(key, alg$1, "decrypt");
-	checkKeyLength(alg$1, key);
-	return new Uint8Array(await crypto.subtle.decrypt(subtleAlgorithm(alg$1), key, encryptedKey));
-}
-var unsupportedAlg = "Invalid or unsupported JWK \"alg\" (Algorithm) Parameter value";
-function subtleMapping(jwk) {
-	let algorithm$1;
-	let keyUsages;
-	switch (jwk.kty) {
-		case "AKP":
-			switch (jwk.alg) {
-				case "ML-DSA-44":
-				case "ML-DSA-65":
-				case "ML-DSA-87":
-					algorithm$1 = { name: jwk.alg };
-					keyUsages = jwk.priv ? ["sign"] : ["verify"];
-					break;
-				default: throw new JOSENotSupported(unsupportedAlg);
-			}
-			break;
-		case "RSA":
-			switch (jwk.alg) {
-				case "PS256":
-				case "PS384":
-				case "PS512":
-					algorithm$1 = {
-						name: "RSA-PSS",
-						hash: `SHA-${jwk.alg.slice(-3)}`
-					};
-					keyUsages = jwk.d ? ["sign"] : ["verify"];
-					break;
-				case "RS256":
-				case "RS384":
-				case "RS512":
-					algorithm$1 = {
-						name: "RSASSA-PKCS1-v1_5",
-						hash: `SHA-${jwk.alg.slice(-3)}`
-					};
-					keyUsages = jwk.d ? ["sign"] : ["verify"];
-					break;
-				case "RSA-OAEP":
-				case "RSA-OAEP-256":
-				case "RSA-OAEP-384":
-				case "RSA-OAEP-512":
-					algorithm$1 = {
-						name: "RSA-OAEP",
-						hash: `SHA-${parseInt(jwk.alg.slice(-3), 10) || 1}`
-					};
-					keyUsages = jwk.d ? ["decrypt", "unwrapKey"] : ["encrypt", "wrapKey"];
-					break;
-				default: throw new JOSENotSupported(unsupportedAlg);
-			}
-			break;
-		case "EC":
-			switch (jwk.alg) {
-				case "ES256":
-				case "ES384":
-				case "ES512":
-					algorithm$1 = {
-						name: "ECDSA",
-						namedCurve: {
-							ES256: "P-256",
-							ES384: "P-384",
-							ES512: "P-521"
-						}[jwk.alg]
-					};
-					keyUsages = jwk.d ? ["sign"] : ["verify"];
-					break;
-				case "ECDH-ES":
-				case "ECDH-ES+A128KW":
-				case "ECDH-ES+A192KW":
-				case "ECDH-ES+A256KW":
-					algorithm$1 = {
-						name: "ECDH",
-						namedCurve: jwk.crv
-					};
-					keyUsages = jwk.d ? ["deriveBits"] : [];
-					break;
-				default: throw new JOSENotSupported(unsupportedAlg);
-			}
-			break;
-		case "OKP":
-			switch (jwk.alg) {
-				case "Ed25519":
-				case "EdDSA":
-					algorithm$1 = { name: "Ed25519" };
-					keyUsages = jwk.d ? ["sign"] : ["verify"];
-					break;
-				case "ECDH-ES":
-				case "ECDH-ES+A128KW":
-				case "ECDH-ES+A192KW":
-				case "ECDH-ES+A256KW":
-					algorithm$1 = { name: jwk.crv };
-					keyUsages = jwk.d ? ["deriveBits"] : [];
-					break;
-				default: throw new JOSENotSupported(unsupportedAlg);
-			}
-			break;
-		default: throw new JOSENotSupported("Invalid or unsupported JWK \"kty\" (Key Type) Parameter value");
-	}
-	return {
-		algorithm: algorithm$1,
-		keyUsages
-	};
-}
-async function jwkToKey(jwk) {
-	if (!jwk.alg) throw new TypeError("\"alg\" argument is required when \"jwk.alg\" is not present");
-	const { algorithm: algorithm$1, keyUsages } = subtleMapping(jwk);
-	const keyData = { ...jwk };
-	if (keyData.kty !== "AKP") delete keyData.alg;
-	delete keyData.use;
-	return crypto.subtle.importKey("jwk", keyData, algorithm$1, jwk.ext ?? (jwk.d || jwk.priv ? false : true), jwk.key_ops ?? keyUsages);
-}
-var unusableForAlg = "given KeyObject instance cannot be used for this algorithm";
-var cache$1;
-var handleJWK = async (key, jwk, alg$1, freeze = false) => {
-	cache$1 ||= /* @__PURE__ */ new WeakMap();
-	let cached$1 = cache$1.get(key);
-	if (cached$1?.[alg$1]) return cached$1[alg$1];
-	const cryptoKey = await jwkToKey({
-		...jwk,
-		alg: alg$1
-	});
-	if (freeze) Object.freeze(key);
-	if (!cached$1) cache$1.set(key, { [alg$1]: cryptoKey });
-	else cached$1[alg$1] = cryptoKey;
-	return cryptoKey;
-};
-var handleKeyObject = (keyObject, alg$1) => {
-	cache$1 ||= /* @__PURE__ */ new WeakMap();
-	let cached$1 = cache$1.get(keyObject);
-	if (cached$1?.[alg$1]) return cached$1[alg$1];
-	const isPublic$4 = keyObject.type === "public";
-	const extractable = isPublic$4 ? true : false;
-	let cryptoKey;
-	if (keyObject.asymmetricKeyType === "x25519") {
-		switch (alg$1) {
-			case "ECDH-ES":
-			case "ECDH-ES+A128KW":
-			case "ECDH-ES+A192KW":
-			case "ECDH-ES+A256KW": break;
-			default: throw new TypeError(unusableForAlg);
-		}
-		cryptoKey = keyObject.toCryptoKey(keyObject.asymmetricKeyType, extractable, isPublic$4 ? [] : ["deriveBits"]);
-	}
-	if (keyObject.asymmetricKeyType === "ed25519") {
-		if (alg$1 !== "EdDSA" && alg$1 !== "Ed25519") throw new TypeError(unusableForAlg);
-		cryptoKey = keyObject.toCryptoKey(keyObject.asymmetricKeyType, extractable, [isPublic$4 ? "verify" : "sign"]);
-	}
-	switch (keyObject.asymmetricKeyType) {
-		case "ml-dsa-44":
-		case "ml-dsa-65":
-		case "ml-dsa-87":
-			if (alg$1 !== keyObject.asymmetricKeyType.toUpperCase()) throw new TypeError(unusableForAlg);
-			cryptoKey = keyObject.toCryptoKey(keyObject.asymmetricKeyType, extractable, [isPublic$4 ? "verify" : "sign"]);
-	}
-	if (keyObject.asymmetricKeyType === "rsa") {
-		let hash$1;
-		switch (alg$1) {
-			case "RSA-OAEP":
-				hash$1 = "SHA-1";
-				break;
-			case "RS256":
-			case "PS256":
-			case "RSA-OAEP-256":
-				hash$1 = "SHA-256";
-				break;
-			case "RS384":
-			case "PS384":
-			case "RSA-OAEP-384":
-				hash$1 = "SHA-384";
-				break;
-			case "RS512":
-			case "PS512":
-			case "RSA-OAEP-512":
-				hash$1 = "SHA-512";
-				break;
-			default: throw new TypeError(unusableForAlg);
-		}
-		if (alg$1.startsWith("RSA-OAEP")) return keyObject.toCryptoKey({
-			name: "RSA-OAEP",
-			hash: hash$1
-		}, extractable, isPublic$4 ? ["encrypt"] : ["decrypt"]);
-		cryptoKey = keyObject.toCryptoKey({
-			name: alg$1.startsWith("PS") ? "RSA-PSS" : "RSASSA-PKCS1-v1_5",
-			hash: hash$1
-		}, extractable, [isPublic$4 ? "verify" : "sign"]);
-	}
-	if (keyObject.asymmetricKeyType === "ec") {
-		const namedCurve = new Map([
-			["prime256v1", "P-256"],
-			["secp384r1", "P-384"],
-			["secp521r1", "P-521"]
-		]).get(keyObject.asymmetricKeyDetails?.namedCurve);
-		if (!namedCurve) throw new TypeError(unusableForAlg);
-		const expectedCurve = {
-			ES256: "P-256",
-			ES384: "P-384",
-			ES512: "P-521"
-		};
-		if (expectedCurve[alg$1] && namedCurve === expectedCurve[alg$1]) cryptoKey = keyObject.toCryptoKey({
-			name: "ECDSA",
-			namedCurve
-		}, extractable, [isPublic$4 ? "verify" : "sign"]);
-		if (alg$1.startsWith("ECDH-ES")) cryptoKey = keyObject.toCryptoKey({
-			name: "ECDH",
-			namedCurve
-		}, extractable, isPublic$4 ? [] : ["deriveBits"]);
-	}
-	if (!cryptoKey) throw new TypeError(unusableForAlg);
-	if (!cached$1) cache$1.set(keyObject, { [alg$1]: cryptoKey });
-	else cached$1[alg$1] = cryptoKey;
-	return cryptoKey;
-};
-async function normalizeKey(key, alg$1) {
-	if (key instanceof Uint8Array) return key;
-	if (isCryptoKey(key)) return key;
-	if (isKeyObject(key)) {
-		if (key.type === "secret") return key.export();
-		if ("toCryptoKey" in key && typeof key.toCryptoKey === "function") try {
-			return handleKeyObject(key, alg$1);
-		} catch (err) {
-			if (err instanceof TypeError) throw err;
-		}
-		return handleJWK(key, key.export({ format: "jwk" }), alg$1);
-	}
-	if (isJWK(key)) {
-		if (key.k) return decode$1(key.k);
-		return handleJWK(key, key, alg$1, true);
-	}
-	throw new Error("unreachable");
-}
-async function importJWK(jwk, alg$1, options) {
-	if (!isObject(jwk)) throw new TypeError("JWK must be an object");
-	let ext;
-	alg$1 ??= jwk.alg;
-	ext ??= options?.extractable ?? jwk.ext;
-	switch (jwk.kty) {
-		case "oct":
-			if (typeof jwk.k !== "string" || !jwk.k) throw new TypeError("missing \"k\" (Key Value) Parameter value");
-			return decode$1(jwk.k);
-		case "RSA":
-			if ("oth" in jwk && jwk.oth !== void 0) throw new JOSENotSupported("RSA JWK \"oth\" (Other Primes Info) Parameter value is not supported");
-			return jwkToKey({
-				...jwk,
-				alg: alg$1,
-				ext
-			});
-		case "AKP":
-			if (typeof jwk.alg !== "string" || !jwk.alg) throw new TypeError("missing \"alg\" (Algorithm) Parameter value");
-			if (alg$1 !== void 0 && alg$1 !== jwk.alg) throw new TypeError("JWK alg and alg option value mismatch");
-			return jwkToKey({
-				...jwk,
-				ext
-			});
-		case "EC":
-		case "OKP": return jwkToKey({
-			...jwk,
-			alg: alg$1,
-			ext
-		});
-		default: throw new JOSENotSupported("Unsupported \"kty\" (Key Type) Parameter value");
-	}
-}
-async function keyToJWK(key) {
-	if (isKeyObject(key)) if (key.type === "secret") key = key.export();
-	else return key.export({ format: "jwk" });
-	if (key instanceof Uint8Array) return {
-		kty: "oct",
-		k: encode$1(key)
-	};
-	if (!isCryptoKey(key)) throw new TypeError(invalidKeyInput(key, "CryptoKey", "KeyObject", "Uint8Array"));
-	if (!key.extractable) throw new TypeError("non-extractable CryptoKey cannot be exported as a JWK");
-	const { ext, key_ops, alg: alg$1, use: use$1, ...jwk } = await crypto.subtle.exportKey("jwk", key);
-	if (jwk.kty === "AKP") jwk.alg = alg$1;
-	return jwk;
-}
-async function exportJWK(key) {
-	return keyToJWK(key);
-}
-async function wrap(alg$1, key, cek, iv) {
-	const wrapped = await encrypt(alg$1.slice(0, 7), cek, key, iv, new Uint8Array());
-	return {
-		encryptedKey: wrapped.ciphertext,
-		iv: encode$1(wrapped.iv),
-		tag: encode$1(wrapped.tag)
-	};
-}
-async function unwrap(alg$1, key, encryptedKey, iv, tag$1) {
-	return decrypt(alg$1.slice(0, 7), key, encryptedKey, iv, tag$1, new Uint8Array());
-}
-var unsupportedAlgHeader = "Invalid or unsupported \"alg\" (JWE Algorithm) header value";
-function assertEncryptedKey(encryptedKey) {
-	if (encryptedKey === void 0) throw new JWEInvalid("JWE Encrypted Key missing");
-}
-async function decryptKeyManagement(alg$1, key, encryptedKey, joseHeader, options) {
-	switch (alg$1) {
-		case "dir":
-			if (encryptedKey !== void 0) throw new JWEInvalid("Encountered unexpected JWE Encrypted Key");
-			return key;
-		case "ECDH-ES": if (encryptedKey !== void 0) throw new JWEInvalid("Encountered unexpected JWE Encrypted Key");
-		case "ECDH-ES+A128KW":
-		case "ECDH-ES+A192KW":
-		case "ECDH-ES+A256KW": {
-			if (!isObject(joseHeader.epk)) throw new JWEInvalid(`JOSE Header "epk" (Ephemeral Public Key) missing or invalid`);
-			assertCryptoKey(key);
-			if (!allowed(key)) throw new JOSENotSupported("ECDH with the provided key is not allowed or not supported by your javascript runtime");
-			const epk = await importJWK(joseHeader.epk, alg$1);
-			assertCryptoKey(epk);
-			let partyUInfo;
-			let partyVInfo;
-			if (joseHeader.apu !== void 0) {
-				if (typeof joseHeader.apu !== "string") throw new JWEInvalid(`JOSE Header "apu" (Agreement PartyUInfo) invalid`);
-				partyUInfo = decodeBase64url(joseHeader.apu, "apu", JWEInvalid);
-			}
-			if (joseHeader.apv !== void 0) {
-				if (typeof joseHeader.apv !== "string") throw new JWEInvalid(`JOSE Header "apv" (Agreement PartyVInfo) invalid`);
-				partyVInfo = decodeBase64url(joseHeader.apv, "apv", JWEInvalid);
-			}
-			const sharedSecret = await deriveKey$1(epk, key, alg$1 === "ECDH-ES" ? joseHeader.enc : alg$1, alg$1 === "ECDH-ES" ? cekLength(joseHeader.enc) : parseInt(alg$1.slice(-5, -2), 10), partyUInfo, partyVInfo);
-			if (alg$1 === "ECDH-ES") return sharedSecret;
-			assertEncryptedKey(encryptedKey);
-			return unwrap$2(alg$1.slice(-6), sharedSecret, encryptedKey);
-		}
-		case "RSA-OAEP":
-		case "RSA-OAEP-256":
-		case "RSA-OAEP-384":
-		case "RSA-OAEP-512":
-			assertEncryptedKey(encryptedKey);
-			assertCryptoKey(key);
-			return decrypt$1(alg$1, key, encryptedKey);
-		case "PBES2-HS256+A128KW":
-		case "PBES2-HS384+A192KW":
-		case "PBES2-HS512+A256KW": {
-			assertEncryptedKey(encryptedKey);
-			if (typeof joseHeader.p2c !== "number") throw new JWEInvalid(`JOSE Header "p2c" (PBES2 Count) missing or invalid`);
-			const p2cLimit = options?.maxPBES2Count || 1e4;
-			if (joseHeader.p2c > p2cLimit) throw new JWEInvalid(`JOSE Header "p2c" (PBES2 Count) out is of acceptable bounds`);
-			if (typeof joseHeader.p2s !== "string") throw new JWEInvalid(`JOSE Header "p2s" (PBES2 Salt) missing or invalid`);
-			let p2s;
-			p2s = decodeBase64url(joseHeader.p2s, "p2s", JWEInvalid);
-			return unwrap$1(alg$1, key, encryptedKey, joseHeader.p2c, p2s);
-		}
-		case "A128KW":
-		case "A192KW":
-		case "A256KW":
-			assertEncryptedKey(encryptedKey);
-			return unwrap$2(alg$1, key, encryptedKey);
-		case "A128GCMKW":
-		case "A192GCMKW":
-		case "A256GCMKW": {
-			assertEncryptedKey(encryptedKey);
-			if (typeof joseHeader.iv !== "string") throw new JWEInvalid(`JOSE Header "iv" (Initialization Vector) missing or invalid`);
-			if (typeof joseHeader.tag !== "string") throw new JWEInvalid(`JOSE Header "tag" (Authentication Tag) missing or invalid`);
-			let iv;
-			iv = decodeBase64url(joseHeader.iv, "iv", JWEInvalid);
-			let tag$1;
-			tag$1 = decodeBase64url(joseHeader.tag, "tag", JWEInvalid);
-			return unwrap(alg$1, key, encryptedKey, iv, tag$1);
-		}
-		default: throw new JOSENotSupported(unsupportedAlgHeader);
-	}
-}
-async function encryptKeyManagement(alg$1, enc$1, key, providedCek, providedParameters = {}) {
-	let encryptedKey;
-	let parameters;
-	let cek;
-	switch (alg$1) {
-		case "dir":
-			cek = key;
-			break;
-		case "ECDH-ES":
-		case "ECDH-ES+A128KW":
-		case "ECDH-ES+A192KW":
-		case "ECDH-ES+A256KW": {
-			assertCryptoKey(key);
-			if (!allowed(key)) throw new JOSENotSupported("ECDH with the provided key is not allowed or not supported by your javascript runtime");
-			const { apu, apv } = providedParameters;
-			let ephemeralKey;
-			if (providedParameters.epk) ephemeralKey = await normalizeKey(providedParameters.epk, alg$1);
-			else ephemeralKey = (await crypto.subtle.generateKey(key.algorithm, true, ["deriveBits"])).privateKey;
-			const { x, y, crv, kty } = await exportJWK(ephemeralKey);
-			const sharedSecret = await deriveKey$1(key, ephemeralKey, alg$1 === "ECDH-ES" ? enc$1 : alg$1, alg$1 === "ECDH-ES" ? cekLength(enc$1) : parseInt(alg$1.slice(-5, -2), 10), apu, apv);
-			parameters = { epk: {
-				x,
-				crv,
-				kty
-			} };
-			if (kty === "EC") parameters.epk.y = y;
-			if (apu) parameters.apu = encode$1(apu);
-			if (apv) parameters.apv = encode$1(apv);
-			if (alg$1 === "ECDH-ES") {
-				cek = sharedSecret;
-				break;
-			}
-			cek = providedCek || generateCek(enc$1);
-			encryptedKey = await wrap$2(alg$1.slice(-6), sharedSecret, cek);
-			break;
-		}
-		case "RSA-OAEP":
-		case "RSA-OAEP-256":
-		case "RSA-OAEP-384":
-		case "RSA-OAEP-512":
-			cek = providedCek || generateCek(enc$1);
-			assertCryptoKey(key);
-			encryptedKey = await encrypt$1(alg$1, key, cek);
-			break;
-		case "PBES2-HS256+A128KW":
-		case "PBES2-HS384+A192KW":
-		case "PBES2-HS512+A256KW": {
-			cek = providedCek || generateCek(enc$1);
-			const { p2c, p2s } = providedParameters;
-			({encryptedKey, ...parameters} = await wrap$1(alg$1, key, cek, p2c, p2s));
-			break;
-		}
-		case "A128KW":
-		case "A192KW":
-		case "A256KW":
-			cek = providedCek || generateCek(enc$1);
-			encryptedKey = await wrap$2(alg$1, key, cek);
-			break;
-		case "A128GCMKW":
-		case "A192GCMKW":
-		case "A256GCMKW": {
-			cek = providedCek || generateCek(enc$1);
-			const { iv } = providedParameters;
-			({encryptedKey, ...parameters} = await wrap(alg$1, key, cek, iv));
-			break;
-		}
-		default: throw new JOSENotSupported(unsupportedAlgHeader);
-	}
-	return {
-		cek,
-		encryptedKey,
-		parameters
-	};
-}
-function validateCrit(Err, recognizedDefault, recognizedOption, protectedHeader, joseHeader) {
-	if (joseHeader.crit !== void 0 && protectedHeader?.crit === void 0) throw new Err("\"crit\" (Critical) Header Parameter MUST be integrity protected");
-	if (!protectedHeader || protectedHeader.crit === void 0) return /* @__PURE__ */ new Set();
-	if (!Array.isArray(protectedHeader.crit) || protectedHeader.crit.length === 0 || protectedHeader.crit.some((input) => typeof input !== "string" || input.length === 0)) throw new Err("\"crit\" (Critical) Header Parameter MUST be an array of non-empty strings when present");
-	let recognized;
-	if (recognizedOption !== void 0) recognized = new Map([...Object.entries(recognizedOption), ...recognizedDefault.entries()]);
-	else recognized = recognizedDefault;
-	for (const parameter of protectedHeader.crit) {
-		if (!recognized.has(parameter)) throw new JOSENotSupported(`Extension Header Parameter "${parameter}" is not recognized`);
-		if (joseHeader[parameter] === void 0) throw new Err(`Extension Header Parameter "${parameter}" is missing`);
-		if (recognized.get(parameter) && protectedHeader[parameter] === void 0) throw new Err(`Extension Header Parameter "${parameter}" MUST be integrity protected`);
-	}
-	return new Set(protectedHeader.crit);
-}
-function validateAlgorithms(option, algorithms) {
-	if (algorithms !== void 0 && (!Array.isArray(algorithms) || algorithms.some((s) => typeof s !== "string"))) throw new TypeError(`"${option}" option must be an array of strings`);
-	if (!algorithms) return;
-	return new Set(algorithms);
-}
-var tag = (key) => key?.[Symbol.toStringTag];
-var jwkMatchesOp = (alg$1, key, usage) => {
-	if (key.use !== void 0) {
-		let expected;
-		switch (usage) {
-			case "sign":
-			case "verify":
-				expected = "sig";
-				break;
-			case "encrypt":
-			case "decrypt":
-				expected = "enc";
-				break;
-		}
-		if (key.use !== expected) throw new TypeError(`Invalid key for this operation, its "use" must be "${expected}" when present`);
-	}
-	if (key.alg !== void 0 && key.alg !== alg$1) throw new TypeError(`Invalid key for this operation, its "alg" must be "${alg$1}" when present`);
-	if (Array.isArray(key.key_ops)) {
-		let expectedKeyOp;
-		switch (true) {
-			case usage === "sign" || usage === "verify":
-			case alg$1 === "dir":
-			case alg$1.includes("CBC-HS"):
-				expectedKeyOp = usage;
-				break;
-			case alg$1.startsWith("PBES2"):
-				expectedKeyOp = "deriveBits";
-				break;
-			case /^A\d{3}(?:GCM)?(?:KW)?$/.test(alg$1):
-				if (!alg$1.includes("GCM") && alg$1.endsWith("KW")) expectedKeyOp = usage === "encrypt" ? "wrapKey" : "unwrapKey";
-				else expectedKeyOp = usage;
-				break;
-			case usage === "encrypt" && alg$1.startsWith("RSA"):
-				expectedKeyOp = "wrapKey";
-				break;
-			case usage === "decrypt":
-				expectedKeyOp = alg$1.startsWith("RSA") ? "unwrapKey" : "deriveBits";
-				break;
-		}
-		if (expectedKeyOp && key.key_ops?.includes?.(expectedKeyOp) === false) throw new TypeError(`Invalid key for this operation, its "key_ops" must include "${expectedKeyOp}" when present`);
-	}
-	return true;
-};
-var symmetricTypeCheck = (alg$1, key, usage) => {
-	if (key instanceof Uint8Array) return;
-	if (isJWK(key)) {
-		if (isSecretJWK(key) && jwkMatchesOp(alg$1, key, usage)) return;
-		throw new TypeError(`JSON Web Key for symmetric algorithms must have JWK "kty" (Key Type) equal to "oct" and the JWK "k" (Key Value) present`);
-	}
-	if (!isKeyLike(key)) throw new TypeError(withAlg(alg$1, key, "CryptoKey", "KeyObject", "JSON Web Key", "Uint8Array"));
-	if (key.type !== "secret") throw new TypeError(`${tag(key)} instances for symmetric algorithms must be of type "secret"`);
-};
-var asymmetricTypeCheck = (alg$1, key, usage) => {
-	if (isJWK(key)) switch (usage) {
-		case "decrypt":
-		case "sign":
-			if (isPrivateJWK(key) && jwkMatchesOp(alg$1, key, usage)) return;
-			throw new TypeError(`JSON Web Key for this operation must be a private JWK`);
-		case "encrypt":
-		case "verify":
-			if (isPublicJWK(key) && jwkMatchesOp(alg$1, key, usage)) return;
-			throw new TypeError(`JSON Web Key for this operation must be a public JWK`);
-	}
-	if (!isKeyLike(key)) throw new TypeError(withAlg(alg$1, key, "CryptoKey", "KeyObject", "JSON Web Key"));
-	if (key.type === "secret") throw new TypeError(`${tag(key)} instances for asymmetric algorithms must not be of type "secret"`);
-	if (key.type === "public") switch (usage) {
-		case "sign": throw new TypeError(`${tag(key)} instances for asymmetric algorithm signing must be of type "private"`);
-		case "decrypt": throw new TypeError(`${tag(key)} instances for asymmetric algorithm decryption must be of type "private"`);
-	}
-	if (key.type === "private") switch (usage) {
-		case "verify": throw new TypeError(`${tag(key)} instances for asymmetric algorithm verifying must be of type "public"`);
-		case "encrypt": throw new TypeError(`${tag(key)} instances for asymmetric algorithm encryption must be of type "public"`);
-	}
-};
-function checkKeyType(alg$1, key, usage) {
-	switch (alg$1.substring(0, 2)) {
-		case "A1":
-		case "A2":
-		case "di":
-		case "HS":
-		case "PB":
-			symmetricTypeCheck(alg$1, key, usage);
-			break;
-		default: asymmetricTypeCheck(alg$1, key, usage);
-	}
-}
-function supported(name) {
-	if (typeof globalThis[name] === "undefined") throw new JOSENotSupported(`JWE "zip" (Compression Algorithm) Header Parameter requires the ${name} API.`);
-}
-async function compress(input) {
-	supported("CompressionStream");
-	const cs = new CompressionStream("deflate-raw");
-	const writer = cs.writable.getWriter();
-	writer.write(input).catch(() => {});
-	writer.close().catch(() => {});
-	const chunks = [];
-	const reader = cs.readable.getReader();
-	for (;;) {
-		const { value, done } = await reader.read();
-		if (done) break;
-		chunks.push(value);
-	}
-	return concat$2(...chunks);
-}
-async function decompress(input, maxLength) {
-	supported("DecompressionStream");
-	const ds = new DecompressionStream("deflate-raw");
-	const writer = ds.writable.getWriter();
-	writer.write(input).catch(() => {});
-	writer.close().catch(() => {});
-	const chunks = [];
-	let length = 0;
-	const reader = ds.readable.getReader();
-	for (;;) {
-		const { value, done } = await reader.read();
-		if (done) break;
-		chunks.push(value);
-		length += value.byteLength;
-		if (maxLength !== Infinity && length > maxLength) throw new JWEInvalid("Decompressed plaintext exceeded the configured limit");
-	}
-	return concat$2(...chunks);
-}
-async function flattenedDecrypt(jwe, key, options) {
-	if (!isObject(jwe)) throw new JWEInvalid("Flattened JWE must be an object");
-	if (jwe.protected === void 0 && jwe.header === void 0 && jwe.unprotected === void 0) throw new JWEInvalid("JOSE Header missing");
-	if (jwe.iv !== void 0 && typeof jwe.iv !== "string") throw new JWEInvalid("JWE Initialization Vector incorrect type");
-	if (typeof jwe.ciphertext !== "string") throw new JWEInvalid("JWE Ciphertext missing or incorrect type");
-	if (jwe.tag !== void 0 && typeof jwe.tag !== "string") throw new JWEInvalid("JWE Authentication Tag incorrect type");
-	if (jwe.protected !== void 0 && typeof jwe.protected !== "string") throw new JWEInvalid("JWE Protected Header incorrect type");
-	if (jwe.encrypted_key !== void 0 && typeof jwe.encrypted_key !== "string") throw new JWEInvalid("JWE Encrypted Key incorrect type");
-	if (jwe.aad !== void 0 && typeof jwe.aad !== "string") throw new JWEInvalid("JWE AAD incorrect type");
-	if (jwe.header !== void 0 && !isObject(jwe.header)) throw new JWEInvalid("JWE Shared Unprotected Header incorrect type");
-	if (jwe.unprotected !== void 0 && !isObject(jwe.unprotected)) throw new JWEInvalid("JWE Per-Recipient Unprotected Header incorrect type");
-	let parsedProt;
-	if (jwe.protected) try {
-		const protectedHeader$1 = decode$1(jwe.protected);
-		parsedProt = JSON.parse(decoder.decode(protectedHeader$1));
-	} catch {
-		throw new JWEInvalid("JWE Protected Header is invalid");
-	}
-	if (!isDisjoint(parsedProt, jwe.header, jwe.unprotected)) throw new JWEInvalid("JWE Protected, JWE Unprotected Header, and JWE Per-Recipient Unprotected Header Parameter names must be disjoint");
-	const joseHeader = {
-		...parsedProt,
-		...jwe.header,
-		...jwe.unprotected
-	};
-	validateCrit(JWEInvalid, /* @__PURE__ */ new Map(), options?.crit, parsedProt, joseHeader);
-	if (joseHeader.zip !== void 0 && joseHeader.zip !== "DEF") throw new JOSENotSupported("Unsupported JWE \"zip\" (Compression Algorithm) Header Parameter value.");
-	if (joseHeader.zip !== void 0 && !parsedProt?.zip) throw new JWEInvalid("JWE \"zip\" (Compression Algorithm) Header Parameter MUST be in a protected header.");
-	const { alg: alg$1, enc: enc$1 } = joseHeader;
-	if (typeof alg$1 !== "string" || !alg$1) throw new JWEInvalid("missing JWE Algorithm (alg) in JWE Header");
-	if (typeof enc$1 !== "string" || !enc$1) throw new JWEInvalid("missing JWE Encryption Algorithm (enc) in JWE Header");
-	const keyManagementAlgorithms = options && validateAlgorithms("keyManagementAlgorithms", options.keyManagementAlgorithms);
-	const contentEncryptionAlgorithms = options && validateAlgorithms("contentEncryptionAlgorithms", options.contentEncryptionAlgorithms);
-	if (keyManagementAlgorithms && !keyManagementAlgorithms.has(alg$1) || !keyManagementAlgorithms && alg$1.startsWith("PBES2")) throw new JOSEAlgNotAllowed("\"alg\" (Algorithm) Header Parameter value not allowed");
-	if (contentEncryptionAlgorithms && !contentEncryptionAlgorithms.has(enc$1)) throw new JOSEAlgNotAllowed("\"enc\" (Encryption Algorithm) Header Parameter value not allowed");
-	let encryptedKey;
-	if (jwe.encrypted_key !== void 0) encryptedKey = decodeBase64url(jwe.encrypted_key, "encrypted_key", JWEInvalid);
-	let resolvedKey = false;
-	if (typeof key === "function") {
-		key = await key(parsedProt, jwe);
-		resolvedKey = true;
-	}
-	checkKeyType(alg$1 === "dir" ? enc$1 : alg$1, key, "decrypt");
-	const k = await normalizeKey(key, alg$1);
-	let cek;
-	try {
-		cek = await decryptKeyManagement(alg$1, k, encryptedKey, joseHeader, options);
-	} catch (err) {
-		if (err instanceof TypeError || err instanceof JWEInvalid || err instanceof JOSENotSupported) throw err;
-		cek = generateCek(enc$1);
-	}
-	let iv;
-	let tag$1;
-	if (jwe.iv !== void 0) iv = decodeBase64url(jwe.iv, "iv", JWEInvalid);
-	if (jwe.tag !== void 0) tag$1 = decodeBase64url(jwe.tag, "tag", JWEInvalid);
-	const protectedHeader = jwe.protected !== void 0 ? encode$2(jwe.protected) : new Uint8Array();
-	let additionalData;
-	if (jwe.aad !== void 0) additionalData = concat$2(protectedHeader, encode$2("."), encode$2(jwe.aad));
-	else additionalData = protectedHeader;
-	const ciphertext = decodeBase64url(jwe.ciphertext, "ciphertext", JWEInvalid);
-	const plaintext = await decrypt(enc$1, cek, ciphertext, iv, tag$1, additionalData);
-	const result = { plaintext };
-	if (joseHeader.zip === "DEF") {
-		const maxDecompressedLength = options?.maxDecompressedLength ?? 25e4;
-		if (maxDecompressedLength === 0) throw new JOSENotSupported("JWE \"zip\" (Compression Algorithm) Header Parameter is not supported.");
-		if (maxDecompressedLength !== Infinity && (!Number.isSafeInteger(maxDecompressedLength) || maxDecompressedLength < 1)) throw new TypeError("maxDecompressedLength must be 0, a positive safe integer, or Infinity");
-		result.plaintext = await decompress(plaintext, maxDecompressedLength).catch((cause) => {
-			if (cause instanceof JWEInvalid) throw cause;
-			throw new JWEInvalid("Failed to decompress plaintext", { cause });
-		});
-	}
-	if (jwe.protected !== void 0) result.protectedHeader = parsedProt;
-	if (jwe.aad !== void 0) result.additionalAuthenticatedData = decodeBase64url(jwe.aad, "aad", JWEInvalid);
-	if (jwe.unprotected !== void 0) result.sharedUnprotectedHeader = jwe.unprotected;
-	if (jwe.header !== void 0) result.unprotectedHeader = jwe.header;
-	if (resolvedKey) return {
-		...result,
-		key: k
-	};
-	return result;
-}
-async function compactDecrypt(jwe, key, options) {
-	if (jwe instanceof Uint8Array) jwe = decoder.decode(jwe);
-	if (typeof jwe !== "string") throw new JWEInvalid("Compact JWE must be a string or Uint8Array");
-	const { 0: protectedHeader, 1: encryptedKey, 2: iv, 3: ciphertext, 4: tag$1, length } = jwe.split(".");
-	if (length !== 5) throw new JWEInvalid("Invalid Compact JWE");
-	const decrypted = await flattenedDecrypt({
-		ciphertext,
-		iv: iv || void 0,
-		protected: protectedHeader,
-		tag: tag$1 || void 0,
-		encrypted_key: encryptedKey || void 0
-	}, key, options);
-	const result = {
-		plaintext: decrypted.plaintext,
-		protectedHeader: decrypted.protectedHeader
-	};
-	if (typeof key === "function") return {
-		...result,
-		key: decrypted.key
-	};
-	return result;
-}
-var FlattenedEncrypt = class {
-	#plaintext;
-	#protectedHeader;
-	#sharedUnprotectedHeader;
-	#unprotectedHeader;
-	#aad;
-	#cek;
-	#iv;
-	#keyManagementParameters;
-	constructor(plaintext) {
-		if (!(plaintext instanceof Uint8Array)) throw new TypeError("plaintext must be an instance of Uint8Array");
-		this.#plaintext = plaintext;
-	}
-	setKeyManagementParameters(parameters) {
-		assertNotSet(this.#keyManagementParameters, "setKeyManagementParameters");
-		this.#keyManagementParameters = parameters;
-		return this;
-	}
-	setProtectedHeader(protectedHeader) {
-		assertNotSet(this.#protectedHeader, "setProtectedHeader");
-		this.#protectedHeader = protectedHeader;
-		return this;
-	}
-	setSharedUnprotectedHeader(sharedUnprotectedHeader) {
-		assertNotSet(this.#sharedUnprotectedHeader, "setSharedUnprotectedHeader");
-		this.#sharedUnprotectedHeader = sharedUnprotectedHeader;
-		return this;
-	}
-	setUnprotectedHeader(unprotectedHeader) {
-		assertNotSet(this.#unprotectedHeader, "setUnprotectedHeader");
-		this.#unprotectedHeader = unprotectedHeader;
-		return this;
-	}
-	setAdditionalAuthenticatedData(aad) {
-		this.#aad = aad;
-		return this;
-	}
-	setContentEncryptionKey(cek) {
-		assertNotSet(this.#cek, "setContentEncryptionKey");
-		this.#cek = cek;
-		return this;
-	}
-	setInitializationVector(iv) {
-		assertNotSet(this.#iv, "setInitializationVector");
-		this.#iv = iv;
-		return this;
-	}
-	async encrypt(key, options) {
-		if (!this.#protectedHeader && !this.#unprotectedHeader && !this.#sharedUnprotectedHeader) throw new JWEInvalid("either setProtectedHeader, setUnprotectedHeader, or sharedUnprotectedHeader must be called before #encrypt()");
-		if (!isDisjoint(this.#protectedHeader, this.#unprotectedHeader, this.#sharedUnprotectedHeader)) throw new JWEInvalid("JWE Protected, JWE Shared Unprotected and JWE Per-Recipient Header Parameter names must be disjoint");
-		const joseHeader = {
-			...this.#protectedHeader,
-			...this.#unprotectedHeader,
-			...this.#sharedUnprotectedHeader
-		};
-		validateCrit(JWEInvalid, /* @__PURE__ */ new Map(), options?.crit, this.#protectedHeader, joseHeader);
-		if (joseHeader.zip !== void 0 && joseHeader.zip !== "DEF") throw new JOSENotSupported("Unsupported JWE \"zip\" (Compression Algorithm) Header Parameter value.");
-		if (joseHeader.zip !== void 0 && !this.#protectedHeader?.zip) throw new JWEInvalid("JWE \"zip\" (Compression Algorithm) Header Parameter MUST be in a protected header.");
-		const { alg: alg$1, enc: enc$1 } = joseHeader;
-		if (typeof alg$1 !== "string" || !alg$1) throw new JWEInvalid("JWE \"alg\" (Algorithm) Header Parameter missing or invalid");
-		if (typeof enc$1 !== "string" || !enc$1) throw new JWEInvalid("JWE \"enc\" (Encryption Algorithm) Header Parameter missing or invalid");
-		let encryptedKey;
-		if (this.#cek && (alg$1 === "dir" || alg$1 === "ECDH-ES")) throw new TypeError(`setContentEncryptionKey cannot be called with JWE "alg" (Algorithm) Header ${alg$1}`);
-		checkKeyType(alg$1 === "dir" ? enc$1 : alg$1, key, "encrypt");
-		let cek;
-		{
-			let parameters;
-			const k = await normalizeKey(key, alg$1);
-			({cek, encryptedKey, parameters} = await encryptKeyManagement(alg$1, enc$1, k, this.#cek, this.#keyManagementParameters));
-			if (parameters) if (options && unprotected in options) if (!this.#unprotectedHeader) this.setUnprotectedHeader(parameters);
-			else this.#unprotectedHeader = {
-				...this.#unprotectedHeader,
-				...parameters
-			};
-			else if (!this.#protectedHeader) this.setProtectedHeader(parameters);
-			else this.#protectedHeader = {
-				...this.#protectedHeader,
-				...parameters
-			};
-		}
-		let additionalData;
-		let protectedHeaderS;
-		let protectedHeaderB;
-		let aadMember;
-		if (this.#protectedHeader) {
-			protectedHeaderS = encode$1(JSON.stringify(this.#protectedHeader));
-			protectedHeaderB = encode$2(protectedHeaderS);
-		} else {
-			protectedHeaderS = "";
-			protectedHeaderB = new Uint8Array();
-		}
-		if (this.#aad) {
-			aadMember = encode$1(this.#aad);
-			const aadMemberBytes = encode$2(aadMember);
-			additionalData = concat$2(protectedHeaderB, encode$2("."), aadMemberBytes);
-		} else additionalData = protectedHeaderB;
-		let plaintext = this.#plaintext;
-		if (joseHeader.zip === "DEF") plaintext = await compress(plaintext).catch((cause) => {
-			throw new JWEInvalid("Failed to compress plaintext", { cause });
-		});
-		const { ciphertext, tag: tag$1, iv } = await encrypt(enc$1, plaintext, cek, this.#iv, additionalData);
-		const jwe = { ciphertext: encode$1(ciphertext) };
-		if (iv) jwe.iv = encode$1(iv);
-		if (tag$1) jwe.tag = encode$1(tag$1);
-		if (encryptedKey) jwe.encrypted_key = encode$1(encryptedKey);
-		if (aadMember) jwe.aad = aadMember;
-		if (this.#protectedHeader) jwe.protected = protectedHeaderS;
-		if (this.#sharedUnprotectedHeader) jwe.unprotected = this.#sharedUnprotectedHeader;
-		if (this.#unprotectedHeader) jwe.header = this.#unprotectedHeader;
-		return jwe;
-	}
-};
-async function flattenedVerify(jws, key, options) {
-	if (!isObject(jws)) throw new JWSInvalid("Flattened JWS must be an object");
-	if (jws.protected === void 0 && jws.header === void 0) throw new JWSInvalid("Flattened JWS must have either of the \"protected\" or \"header\" members");
-	if (jws.protected !== void 0 && typeof jws.protected !== "string") throw new JWSInvalid("JWS Protected Header incorrect type");
-	if (jws.payload === void 0) throw new JWSInvalid("JWS Payload missing");
-	if (typeof jws.signature !== "string") throw new JWSInvalid("JWS Signature missing or incorrect type");
-	if (jws.header !== void 0 && !isObject(jws.header)) throw new JWSInvalid("JWS Unprotected Header incorrect type");
-	let parsedProt = {};
-	if (jws.protected) try {
-		const protectedHeader = decode$1(jws.protected);
-		parsedProt = JSON.parse(decoder.decode(protectedHeader));
-	} catch {
-		throw new JWSInvalid("JWS Protected Header is invalid");
-	}
-	if (!isDisjoint(parsedProt, jws.header)) throw new JWSInvalid("JWS Protected and JWS Unprotected Header Parameter names must be disjoint");
-	const joseHeader = {
-		...parsedProt,
-		...jws.header
-	};
-	const extensions = validateCrit(JWSInvalid, new Map([["b64", true]]), options?.crit, parsedProt, joseHeader);
-	let b64 = true;
-	if (extensions.has("b64")) {
-		b64 = parsedProt.b64;
-		if (typeof b64 !== "boolean") throw new JWSInvalid("The \"b64\" (base64url-encode payload) Header Parameter must be a boolean");
-	}
-	const { alg: alg$1 } = joseHeader;
-	if (typeof alg$1 !== "string" || !alg$1) throw new JWSInvalid("JWS \"alg\" (Algorithm) Header Parameter missing or invalid");
-	const algorithms = options && validateAlgorithms("algorithms", options.algorithms);
-	if (algorithms && !algorithms.has(alg$1)) throw new JOSEAlgNotAllowed("\"alg\" (Algorithm) Header Parameter value not allowed");
-	if (b64) {
-		if (typeof jws.payload !== "string") throw new JWSInvalid("JWS Payload must be a string");
-	} else if (typeof jws.payload !== "string" && !(jws.payload instanceof Uint8Array)) throw new JWSInvalid("JWS Payload must be a string or an Uint8Array instance");
-	let resolvedKey = false;
-	if (typeof key === "function") {
-		key = await key(parsedProt, jws);
-		resolvedKey = true;
-	}
-	checkKeyType(alg$1, key, "verify");
-	const data = concat$2(jws.protected !== void 0 ? encode$2(jws.protected) : new Uint8Array(), encode$2("."), typeof jws.payload === "string" ? b64 ? encode$2(jws.payload) : encoder.encode(jws.payload) : jws.payload);
-	const signature = decodeBase64url(jws.signature, "signature", JWSInvalid);
-	const k = await normalizeKey(key, alg$1);
-	if (!await verify(alg$1, k, signature, data)) throw new JWSSignatureVerificationFailed();
-	let payload;
-	if (b64) payload = decodeBase64url(jws.payload, "payload", JWSInvalid);
-	else if (typeof jws.payload === "string") payload = encoder.encode(jws.payload);
-	else payload = jws.payload;
-	const result = { payload };
-	if (jws.protected !== void 0) result.protectedHeader = parsedProt;
-	if (jws.header !== void 0) result.unprotectedHeader = jws.header;
-	if (resolvedKey) return {
-		...result,
-		key: k
-	};
-	return result;
-}
-async function compactVerify(jws, key, options) {
-	if (jws instanceof Uint8Array) jws = decoder.decode(jws);
-	if (typeof jws !== "string") throw new JWSInvalid("Compact JWS must be a string or Uint8Array");
-	const { 0: protectedHeader, 1: payload, 2: signature, length } = jws.split(".");
-	if (length !== 3) throw new JWSInvalid("Invalid Compact JWS");
-	const verified = await flattenedVerify({
-		payload,
-		protected: protectedHeader,
-		signature
-	}, key, options);
-	const result = {
-		payload: verified.payload,
-		protectedHeader: verified.protectedHeader
-	};
-	if (typeof key === "function") return {
-		...result,
-		key: verified.key
-	};
-	return result;
-}
-var epoch = (date$4) => Math.floor(date$4.getTime() / 1e3);
-var minute = 60;
-var hour = minute * 60;
-var day = hour * 24;
-var week = day * 7;
-var year = day * 365.25;
-var REGEX$1 = /^(\+|\-)? ?(\d+|\d+\.\d+) ?(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)(?: (ago|from now))?$/i;
-function secs(str) {
-	const matched = REGEX$1.exec(str);
-	if (!matched || matched[4] && matched[1]) throw new TypeError("Invalid time period format");
-	const value = parseFloat(matched[2]);
-	const unit = matched[3].toLowerCase();
-	let numericDate;
-	switch (unit) {
-		case "sec":
-		case "secs":
-		case "second":
-		case "seconds":
-		case "s":
-			numericDate = Math.round(value);
-			break;
-		case "minute":
-		case "minutes":
-		case "min":
-		case "mins":
-		case "m":
-			numericDate = Math.round(value * minute);
-			break;
-		case "hour":
-		case "hours":
-		case "hr":
-		case "hrs":
-		case "h":
-			numericDate = Math.round(value * hour);
-			break;
-		case "day":
-		case "days":
-		case "d":
-			numericDate = Math.round(value * day);
-			break;
-		case "week":
-		case "weeks":
-		case "w":
-			numericDate = Math.round(value * week);
-			break;
-		default:
-			numericDate = Math.round(value * year);
-			break;
-	}
-	if (matched[1] === "-" || matched[4] === "ago") return -numericDate;
-	return numericDate;
-}
-function validateInput(label, input) {
-	if (!Number.isFinite(input)) throw new TypeError(`Invalid ${label} input`);
-	return input;
-}
-var normalizeTyp = (value) => {
-	if (value.includes("/")) return value.toLowerCase();
-	return `application/${value.toLowerCase()}`;
-};
-var checkAudiencePresence = (audPayload, audOption) => {
-	if (typeof audPayload === "string") return audOption.includes(audPayload);
-	if (Array.isArray(audPayload)) return audOption.some(Set.prototype.has.bind(new Set(audPayload)));
-	return false;
-};
-function validateClaimsSet(protectedHeader, encodedPayload, options = {}) {
-	let payload;
-	try {
-		payload = JSON.parse(decoder.decode(encodedPayload));
-	} catch {}
-	if (!isObject(payload)) throw new JWTInvalid("JWT Claims Set must be a top-level JSON object");
-	const { typ } = options;
-	if (typ && (typeof protectedHeader.typ !== "string" || normalizeTyp(protectedHeader.typ) !== normalizeTyp(typ))) throw new JWTClaimValidationFailed("unexpected \"typ\" JWT header value", payload, "typ", "check_failed");
-	const { requiredClaims = [], issuer, subject, audience, maxTokenAge } = options;
-	const presenceCheck = [...requiredClaims];
-	if (maxTokenAge !== void 0) presenceCheck.push("iat");
-	if (audience !== void 0) presenceCheck.push("aud");
-	if (subject !== void 0) presenceCheck.push("sub");
-	if (issuer !== void 0) presenceCheck.push("iss");
-	for (const claim of new Set(presenceCheck.reverse())) if (!(claim in payload)) throw new JWTClaimValidationFailed(`missing required "${claim}" claim`, payload, claim, "missing");
-	if (issuer && !(Array.isArray(issuer) ? issuer : [issuer]).includes(payload.iss)) throw new JWTClaimValidationFailed("unexpected \"iss\" claim value", payload, "iss", "check_failed");
-	if (subject && payload.sub !== subject) throw new JWTClaimValidationFailed("unexpected \"sub\" claim value", payload, "sub", "check_failed");
-	if (audience && !checkAudiencePresence(payload.aud, typeof audience === "string" ? [audience] : audience)) throw new JWTClaimValidationFailed("unexpected \"aud\" claim value", payload, "aud", "check_failed");
-	let tolerance;
-	switch (typeof options.clockTolerance) {
-		case "string":
-			tolerance = secs(options.clockTolerance);
-			break;
-		case "number":
-			tolerance = options.clockTolerance;
-			break;
-		case "undefined":
-			tolerance = 0;
-			break;
-		default: throw new TypeError("Invalid clockTolerance option type");
-	}
-	const { currentDate } = options;
-	const now$1 = epoch(currentDate || /* @__PURE__ */ new Date());
-	if ((payload.iat !== void 0 || maxTokenAge) && typeof payload.iat !== "number") throw new JWTClaimValidationFailed("\"iat\" claim must be a number", payload, "iat", "invalid");
-	if (payload.nbf !== void 0) {
-		if (typeof payload.nbf !== "number") throw new JWTClaimValidationFailed("\"nbf\" claim must be a number", payload, "nbf", "invalid");
-		if (payload.nbf > now$1 + tolerance) throw new JWTClaimValidationFailed("\"nbf\" claim timestamp check failed", payload, "nbf", "check_failed");
-	}
-	if (payload.exp !== void 0) {
-		if (typeof payload.exp !== "number") throw new JWTClaimValidationFailed("\"exp\" claim must be a number", payload, "exp", "invalid");
-		if (payload.exp <= now$1 - tolerance) throw new JWTExpired("\"exp\" claim timestamp check failed", payload, "exp", "check_failed");
-	}
-	if (maxTokenAge) {
-		const age = now$1 - payload.iat;
-		const max = typeof maxTokenAge === "number" ? maxTokenAge : secs(maxTokenAge);
-		if (age - tolerance > max) throw new JWTExpired("\"iat\" claim timestamp check failed (too far in the past)", payload, "iat", "check_failed");
-		if (age < 0 - tolerance) throw new JWTClaimValidationFailed("\"iat\" claim timestamp check failed (it should be in the past)", payload, "iat", "check_failed");
-	}
-	return payload;
-}
-var JWTClaimsBuilder = class {
-	#payload;
-	constructor(payload) {
-		if (!isObject(payload)) throw new TypeError("JWT Claims Set MUST be an object");
-		this.#payload = structuredClone(payload);
-	}
-	data() {
-		return encoder.encode(JSON.stringify(this.#payload));
-	}
-	get iss() {
-		return this.#payload.iss;
-	}
-	set iss(value) {
-		this.#payload.iss = value;
-	}
-	get sub() {
-		return this.#payload.sub;
-	}
-	set sub(value) {
-		this.#payload.sub = value;
-	}
-	get aud() {
-		return this.#payload.aud;
-	}
-	set aud(value) {
-		this.#payload.aud = value;
-	}
-	set jti(value) {
-		this.#payload.jti = value;
-	}
-	set nbf(value) {
-		if (typeof value === "number") this.#payload.nbf = validateInput("setNotBefore", value);
-		else if (value instanceof Date) this.#payload.nbf = validateInput("setNotBefore", epoch(value));
-		else this.#payload.nbf = epoch(/* @__PURE__ */ new Date()) + secs(value);
-	}
-	set exp(value) {
-		if (typeof value === "number") this.#payload.exp = validateInput("setExpirationTime", value);
-		else if (value instanceof Date) this.#payload.exp = validateInput("setExpirationTime", epoch(value));
-		else this.#payload.exp = epoch(/* @__PURE__ */ new Date()) + secs(value);
-	}
-	set iat(value) {
-		if (value === void 0) this.#payload.iat = epoch(/* @__PURE__ */ new Date());
-		else if (value instanceof Date) this.#payload.iat = validateInput("setIssuedAt", epoch(value));
-		else if (typeof value === "string") this.#payload.iat = validateInput("setIssuedAt", epoch(/* @__PURE__ */ new Date()) + secs(value));
-		else this.#payload.iat = validateInput("setIssuedAt", value);
-	}
-};
-async function jwtVerify(jwt$1, key, options) {
-	const verified = await compactVerify(jwt$1, key, options);
-	if (verified.protectedHeader.crit?.includes("b64") && verified.protectedHeader.b64 === false) throw new JWTInvalid("JWTs MUST NOT use unencoded payload");
-	const result = {
-		payload: validateClaimsSet(verified.protectedHeader, verified.payload, options),
-		protectedHeader: verified.protectedHeader
-	};
-	if (typeof key === "function") return {
-		...result,
-		key: verified.key
-	};
-	return result;
-}
-async function jwtDecrypt(jwt$1, key, options) {
-	const decrypted = await compactDecrypt(jwt$1, key, options);
-	const payload = validateClaimsSet(decrypted.protectedHeader, decrypted.plaintext, options);
-	const { protectedHeader } = decrypted;
-	if (protectedHeader.iss !== void 0 && protectedHeader.iss !== payload.iss) throw new JWTClaimValidationFailed("replicated \"iss\" claim header parameter mismatch", payload, "iss", "mismatch");
-	if (protectedHeader.sub !== void 0 && protectedHeader.sub !== payload.sub) throw new JWTClaimValidationFailed("replicated \"sub\" claim header parameter mismatch", payload, "sub", "mismatch");
-	if (protectedHeader.aud !== void 0 && JSON.stringify(protectedHeader.aud) !== JSON.stringify(payload.aud)) throw new JWTClaimValidationFailed("replicated \"aud\" claim header parameter mismatch", payload, "aud", "mismatch");
-	const result = {
-		payload,
-		protectedHeader
-	};
-	if (typeof key === "function") return {
-		...result,
-		key: decrypted.key
-	};
-	return result;
-}
-var CompactEncrypt = class {
-	#flattened;
-	constructor(plaintext) {
-		this.#flattened = new FlattenedEncrypt(plaintext);
-	}
-	setContentEncryptionKey(cek) {
-		this.#flattened.setContentEncryptionKey(cek);
-		return this;
-	}
-	setInitializationVector(iv) {
-		this.#flattened.setInitializationVector(iv);
-		return this;
-	}
-	setProtectedHeader(protectedHeader) {
-		this.#flattened.setProtectedHeader(protectedHeader);
-		return this;
-	}
-	setKeyManagementParameters(parameters) {
-		this.#flattened.setKeyManagementParameters(parameters);
-		return this;
-	}
-	async encrypt(key, options) {
-		const jwe = await this.#flattened.encrypt(key, options);
-		return [
-			jwe.protected,
-			jwe.encrypted_key,
-			jwe.iv,
-			jwe.ciphertext,
-			jwe.tag
-		].join(".");
-	}
-};
-var FlattenedSign = class {
-	#payload;
-	#protectedHeader;
-	#unprotectedHeader;
-	constructor(payload) {
-		if (!(payload instanceof Uint8Array)) throw new TypeError("payload must be an instance of Uint8Array");
-		this.#payload = payload;
-	}
-	setProtectedHeader(protectedHeader) {
-		assertNotSet(this.#protectedHeader, "setProtectedHeader");
-		this.#protectedHeader = protectedHeader;
-		return this;
-	}
-	setUnprotectedHeader(unprotectedHeader) {
-		assertNotSet(this.#unprotectedHeader, "setUnprotectedHeader");
-		this.#unprotectedHeader = unprotectedHeader;
-		return this;
-	}
-	async sign(key, options) {
-		if (!this.#protectedHeader && !this.#unprotectedHeader) throw new JWSInvalid("either setProtectedHeader or setUnprotectedHeader must be called before #sign()");
-		if (!isDisjoint(this.#protectedHeader, this.#unprotectedHeader)) throw new JWSInvalid("JWS Protected and JWS Unprotected Header Parameter names must be disjoint");
-		const joseHeader = {
-			...this.#protectedHeader,
-			...this.#unprotectedHeader
-		};
-		const extensions = validateCrit(JWSInvalid, new Map([["b64", true]]), options?.crit, this.#protectedHeader, joseHeader);
-		let b64 = true;
-		if (extensions.has("b64")) {
-			b64 = this.#protectedHeader.b64;
-			if (typeof b64 !== "boolean") throw new JWSInvalid("The \"b64\" (base64url-encode payload) Header Parameter must be a boolean");
-		}
-		const { alg: alg$1 } = joseHeader;
-		if (typeof alg$1 !== "string" || !alg$1) throw new JWSInvalid("JWS \"alg\" (Algorithm) Header Parameter missing or invalid");
-		checkKeyType(alg$1, key, "sign");
-		let payloadS;
-		let payloadB;
-		if (b64) {
-			payloadS = encode$1(this.#payload);
-			payloadB = encode$2(payloadS);
-		} else {
-			payloadB = this.#payload;
-			payloadS = "";
-		}
-		let protectedHeaderString;
-		let protectedHeaderBytes;
-		if (this.#protectedHeader) {
-			protectedHeaderString = encode$1(JSON.stringify(this.#protectedHeader));
-			protectedHeaderBytes = encode$2(protectedHeaderString);
-		} else {
-			protectedHeaderString = "";
-			protectedHeaderBytes = new Uint8Array();
-		}
-		const data = concat$2(protectedHeaderBytes, encode$2("."), payloadB);
-		const jws = {
-			signature: encode$1(await sign(alg$1, await normalizeKey(key, alg$1), data)),
-			payload: payloadS
-		};
-		if (this.#unprotectedHeader) jws.header = this.#unprotectedHeader;
-		if (this.#protectedHeader) jws.protected = protectedHeaderString;
-		return jws;
-	}
-};
-var CompactSign = class {
-	#flattened;
-	constructor(payload) {
-		this.#flattened = new FlattenedSign(payload);
-	}
-	setProtectedHeader(protectedHeader) {
-		this.#flattened.setProtectedHeader(protectedHeader);
-		return this;
-	}
-	async sign(key, options) {
-		const jws = await this.#flattened.sign(key, options);
-		if (jws.payload === void 0) throw new TypeError("use the flattened module for creating JWS with b64: false");
-		return `${jws.protected}.${jws.payload}.${jws.signature}`;
-	}
-};
-var SignJWT = class {
-	#protectedHeader;
-	#jwt;
-	constructor(payload = {}) {
-		this.#jwt = new JWTClaimsBuilder(payload);
-	}
-	setIssuer(issuer) {
-		this.#jwt.iss = issuer;
-		return this;
-	}
-	setSubject(subject) {
-		this.#jwt.sub = subject;
-		return this;
-	}
-	setAudience(audience) {
-		this.#jwt.aud = audience;
-		return this;
-	}
-	setJti(jwtId) {
-		this.#jwt.jti = jwtId;
-		return this;
-	}
-	setNotBefore(input) {
-		this.#jwt.nbf = input;
-		return this;
-	}
-	setExpirationTime(input) {
-		this.#jwt.exp = input;
-		return this;
-	}
-	setIssuedAt(input) {
-		this.#jwt.iat = input;
-		return this;
-	}
-	setProtectedHeader(protectedHeader) {
-		this.#protectedHeader = protectedHeader;
-		return this;
-	}
-	async sign(key, options) {
-		const sig = new CompactSign(this.#jwt.data());
-		sig.setProtectedHeader(this.#protectedHeader);
-		if (Array.isArray(this.#protectedHeader?.crit) && this.#protectedHeader.crit.includes("b64") && this.#protectedHeader.b64 === false) throw new JWTInvalid("JWTs MUST NOT use unencoded payload");
-		return sig.sign(key, options);
-	}
-};
-var EncryptJWT = class {
-	#cek;
-	#iv;
-	#keyManagementParameters;
-	#protectedHeader;
-	#replicateIssuerAsHeader;
-	#replicateSubjectAsHeader;
-	#replicateAudienceAsHeader;
-	#jwt;
-	constructor(payload = {}) {
-		this.#jwt = new JWTClaimsBuilder(payload);
-	}
-	setIssuer(issuer) {
-		this.#jwt.iss = issuer;
-		return this;
-	}
-	setSubject(subject) {
-		this.#jwt.sub = subject;
-		return this;
-	}
-	setAudience(audience) {
-		this.#jwt.aud = audience;
-		return this;
-	}
-	setJti(jwtId) {
-		this.#jwt.jti = jwtId;
-		return this;
-	}
-	setNotBefore(input) {
-		this.#jwt.nbf = input;
-		return this;
-	}
-	setExpirationTime(input) {
-		this.#jwt.exp = input;
-		return this;
-	}
-	setIssuedAt(input) {
-		this.#jwt.iat = input;
-		return this;
-	}
-	setProtectedHeader(protectedHeader) {
-		assertNotSet(this.#protectedHeader, "setProtectedHeader");
-		this.#protectedHeader = protectedHeader;
-		return this;
-	}
-	setKeyManagementParameters(parameters) {
-		assertNotSet(this.#keyManagementParameters, "setKeyManagementParameters");
-		this.#keyManagementParameters = parameters;
-		return this;
-	}
-	setContentEncryptionKey(cek) {
-		assertNotSet(this.#cek, "setContentEncryptionKey");
-		this.#cek = cek;
-		return this;
-	}
-	setInitializationVector(iv) {
-		assertNotSet(this.#iv, "setInitializationVector");
-		this.#iv = iv;
-		return this;
-	}
-	replicateIssuerAsHeader() {
-		this.#replicateIssuerAsHeader = true;
-		return this;
-	}
-	replicateSubjectAsHeader() {
-		this.#replicateSubjectAsHeader = true;
-		return this;
-	}
-	replicateAudienceAsHeader() {
-		this.#replicateAudienceAsHeader = true;
-		return this;
-	}
-	async encrypt(key, options) {
-		const enc$1 = new CompactEncrypt(this.#jwt.data());
-		if (this.#protectedHeader && (this.#replicateIssuerAsHeader || this.#replicateSubjectAsHeader || this.#replicateAudienceAsHeader)) this.#protectedHeader = {
-			...this.#protectedHeader,
-			iss: this.#replicateIssuerAsHeader ? this.#jwt.iss : void 0,
-			sub: this.#replicateSubjectAsHeader ? this.#jwt.sub : void 0,
-			aud: this.#replicateAudienceAsHeader ? this.#jwt.aud : void 0
-		};
-		enc$1.setProtectedHeader(this.#protectedHeader);
-		if (this.#iv) enc$1.setInitializationVector(this.#iv);
-		if (this.#cek) enc$1.setContentEncryptionKey(this.#cek);
-		if (this.#keyManagementParameters) enc$1.setKeyManagementParameters(this.#keyManagementParameters);
-		return enc$1.encrypt(key, options);
-	}
-};
-var check = (value, description) => {
-	if (typeof value !== "string" || !value) throw new JWKInvalid(`${description} missing or invalid`);
-};
-async function calculateJwkThumbprint(key, digestAlgorithm) {
-	let jwk;
-	if (isJWK(key)) jwk = key;
-	else if (isKeyLike(key)) jwk = await exportJWK(key);
-	else throw new TypeError(invalidKeyInput(key, "CryptoKey", "KeyObject", "JSON Web Key"));
-	digestAlgorithm ??= "sha256";
-	if (digestAlgorithm !== "sha256" && digestAlgorithm !== "sha384" && digestAlgorithm !== "sha512") throw new TypeError("digestAlgorithm must one of \"sha256\", \"sha384\", or \"sha512\"");
-	let components;
-	switch (jwk.kty) {
-		case "AKP":
-			check(jwk.alg, "\"alg\" (Algorithm) Parameter");
-			check(jwk.pub, "\"pub\" (Public key) Parameter");
-			components = {
-				alg: jwk.alg,
-				kty: jwk.kty,
-				pub: jwk.pub
-			};
-			break;
-		case "EC":
-			check(jwk.crv, "\"crv\" (Curve) Parameter");
-			check(jwk.x, "\"x\" (X Coordinate) Parameter");
-			check(jwk.y, "\"y\" (Y Coordinate) Parameter");
-			components = {
-				crv: jwk.crv,
-				kty: jwk.kty,
-				x: jwk.x,
-				y: jwk.y
-			};
-			break;
-		case "OKP":
-			check(jwk.crv, "\"crv\" (Subtype of Key Pair) Parameter");
-			check(jwk.x, "\"x\" (Public Key) Parameter");
-			components = {
-				crv: jwk.crv,
-				kty: jwk.kty,
-				x: jwk.x
-			};
-			break;
-		case "RSA":
-			check(jwk.e, "\"e\" (Exponent) Parameter");
-			check(jwk.n, "\"n\" (Modulus) Parameter");
-			components = {
-				e: jwk.e,
-				kty: jwk.kty,
-				n: jwk.n
-			};
-			break;
-		case "oct":
-			check(jwk.k, "\"k\" (Key Value) Parameter");
-			components = {
-				k: jwk.k,
-				kty: jwk.kty
-			};
-			break;
-		default: throw new JOSENotSupported("\"kty\" (Key Type) Parameter missing or unsupported");
-	}
-	const data = encode$2(JSON.stringify(components));
-	return encode$1(await digest(digestAlgorithm, data));
-}
-function getKtyFromAlg(alg$1) {
-	switch (typeof alg$1 === "string" && alg$1.slice(0, 2)) {
-		case "RS":
-		case "PS": return "RSA";
-		case "ES": return "EC";
-		case "Ed": return "OKP";
-		case "ML": return "AKP";
-		default: throw new JOSENotSupported("Unsupported \"alg\" value for a JSON Web Key Set");
-	}
-}
-function isJWKSLike(jwks) {
-	return jwks && typeof jwks === "object" && Array.isArray(jwks.keys) && jwks.keys.every(isJWKLike);
-}
-function isJWKLike(key) {
-	return isObject(key);
-}
-var LocalJWKSet = class {
-	#jwks;
-	#cached = /* @__PURE__ */ new WeakMap();
-	constructor(jwks) {
-		if (!isJWKSLike(jwks)) throw new JWKSInvalid("JSON Web Key Set malformed");
-		this.#jwks = structuredClone(jwks);
-	}
-	jwks() {
-		return this.#jwks;
-	}
-	async getKey(protectedHeader, token) {
-		const { alg: alg$1, kid } = {
-			...protectedHeader,
-			...token?.header
-		};
-		const kty = getKtyFromAlg(alg$1);
-		const candidates = this.#jwks.keys.filter((jwk$1) => {
-			let candidate = kty === jwk$1.kty;
-			if (candidate && typeof kid === "string") candidate = kid === jwk$1.kid;
-			if (candidate && (typeof jwk$1.alg === "string" || kty === "AKP")) candidate = alg$1 === jwk$1.alg;
-			if (candidate && typeof jwk$1.use === "string") candidate = jwk$1.use === "sig";
-			if (candidate && Array.isArray(jwk$1.key_ops)) candidate = jwk$1.key_ops.includes("verify");
-			if (candidate) switch (alg$1) {
-				case "ES256":
-					candidate = jwk$1.crv === "P-256";
-					break;
-				case "ES384":
-					candidate = jwk$1.crv === "P-384";
-					break;
-				case "ES512":
-					candidate = jwk$1.crv === "P-521";
-					break;
-				case "Ed25519":
-				case "EdDSA":
-					candidate = jwk$1.crv === "Ed25519";
-					break;
-			}
-			return candidate;
-		});
-		const { 0: jwk, length } = candidates;
-		if (length === 0) throw new JWKSNoMatchingKey();
-		if (length !== 1) {
-			const error$51 = new JWKSMultipleMatchingKeys();
-			const _cached = this.#cached;
-			error$51[Symbol.asyncIterator] = async function* () {
-				for (const jwk$1 of candidates) try {
-					yield await importWithAlgCache(_cached, jwk$1, alg$1);
-				} catch {}
-			};
-			throw error$51;
-		}
-		return importWithAlgCache(this.#cached, jwk, alg$1);
-	}
-};
-async function importWithAlgCache(cache$2, jwk, alg$1) {
-	const cached$1 = cache$2.get(jwk) || cache$2.set(jwk, {}).get(jwk);
-	if (cached$1[alg$1] === void 0) {
-		const key = await importJWK({
-			...jwk,
-			ext: true
-		}, alg$1);
-		if (key instanceof Uint8Array || key.type !== "public") throw new JWKSInvalid("JSON Web Key Set members must be public keys");
-		cached$1[alg$1] = key;
-	}
-	return cached$1[alg$1];
-}
-function createLocalJWKSet(jwks) {
-	const set$1 = new LocalJWKSet(jwks);
-	const localJWKSet = async (protectedHeader, token) => set$1.getKey(protectedHeader, token);
-	Object.defineProperties(localJWKSet, { jwks: {
-		value: () => structuredClone(set$1.jwks()),
-		enumerable: false,
-		configurable: false,
-		writable: false
-	} });
-	return localJWKSet;
-}
-function isCloudflareWorkers() {
-	return typeof WebSocketPair !== "undefined" || typeof navigator !== "undefined" && navigator.userAgent === "Cloudflare-Workers" || typeof EdgeRuntime !== "undefined" && EdgeRuntime === "vercel";
-}
-var USER_AGENT;
-if (typeof navigator === "undefined" || !navigator.userAgent?.startsWith?.("Mozilla/5.0 ")) USER_AGENT = `jose/v6.2.3`;
-const customFetch = Symbol();
-async function fetchJwks(url$1, headers, signal, fetchImpl = fetch) {
-	const response = await fetchImpl(url$1, {
-		method: "GET",
-		signal,
-		redirect: "manual",
-		headers
-	}).catch((err) => {
-		if (err.name === "TimeoutError") throw new JWKSTimeout();
-		throw err;
-	});
-	if (response.status !== 200) throw new JOSEError("Expected 200 OK from the JSON Web Key Set HTTP response");
-	try {
-		return await response.json();
-	} catch {
-		throw new JOSEError("Failed to parse the JSON Web Key Set HTTP response as JSON");
-	}
-}
-const jwksCache = Symbol();
-function isFreshJwksCache(input, cacheMaxAge) {
-	if (typeof input !== "object" || input === null) return false;
-	if (!("uat" in input) || typeof input.uat !== "number" || Date.now() - input.uat >= cacheMaxAge) return false;
-	if (!("jwks" in input) || !isObject(input.jwks) || !Array.isArray(input.jwks.keys) || !Array.prototype.every.call(input.jwks.keys, isObject)) return false;
-	return true;
-}
-var RemoteJWKSet = class {
-	#url;
-	#timeoutDuration;
-	#cooldownDuration;
-	#cacheMaxAge;
-	#jwksTimestamp;
-	#pendingFetch;
-	#headers;
-	#customFetch;
-	#local;
-	#cache;
-	constructor(url$1, options) {
-		if (!(url$1 instanceof URL)) throw new TypeError("url must be an instance of URL");
-		this.#url = new URL(url$1.href);
-		this.#timeoutDuration = typeof options?.timeoutDuration === "number" ? options?.timeoutDuration : 5e3;
-		this.#cooldownDuration = typeof options?.cooldownDuration === "number" ? options?.cooldownDuration : 3e4;
-		this.#cacheMaxAge = typeof options?.cacheMaxAge === "number" ? options?.cacheMaxAge : 6e5;
-		this.#headers = new Headers(options?.headers);
-		if (USER_AGENT && !this.#headers.has("User-Agent")) this.#headers.set("User-Agent", USER_AGENT);
-		if (!this.#headers.has("accept")) {
-			this.#headers.set("accept", "application/json");
-			this.#headers.append("accept", "application/jwk-set+json");
-		}
-		this.#customFetch = options?.[customFetch];
-		if (options?.[jwksCache] !== void 0) {
-			this.#cache = options?.[jwksCache];
-			if (isFreshJwksCache(options?.[jwksCache], this.#cacheMaxAge)) {
-				this.#jwksTimestamp = this.#cache.uat;
-				this.#local = createLocalJWKSet(this.#cache.jwks);
-			}
-		}
-	}
-	pendingFetch() {
-		return !!this.#pendingFetch;
-	}
-	coolingDown() {
-		return typeof this.#jwksTimestamp === "number" ? Date.now() < this.#jwksTimestamp + this.#cooldownDuration : false;
-	}
-	fresh() {
-		return typeof this.#jwksTimestamp === "number" ? Date.now() < this.#jwksTimestamp + this.#cacheMaxAge : false;
-	}
-	jwks() {
-		return this.#local?.jwks();
-	}
-	async getKey(protectedHeader, token) {
-		if (!this.#local || !this.fresh()) await this.reload();
-		try {
-			return await this.#local(protectedHeader, token);
-		} catch (err) {
-			if (err instanceof JWKSNoMatchingKey) {
-				if (this.coolingDown() === false) {
-					await this.reload();
-					return this.#local(protectedHeader, token);
-				}
-			}
-			throw err;
-		}
-	}
-	async reload() {
-		if (this.#pendingFetch && isCloudflareWorkers()) this.#pendingFetch = void 0;
-		this.#pendingFetch ||= fetchJwks(this.#url.href, this.#headers, AbortSignal.timeout(this.#timeoutDuration), this.#customFetch).then((json$1) => {
-			this.#local = createLocalJWKSet(json$1);
-			if (this.#cache) {
-				this.#cache.uat = Date.now();
-				this.#cache.jwks = json$1;
-			}
-			this.#jwksTimestamp = Date.now();
-			this.#pendingFetch = void 0;
-		}).catch((err) => {
-			this.#pendingFetch = void 0;
-			throw err;
-		});
-		await this.#pendingFetch;
-	}
-};
-function createRemoteJWKSet(url$1, options) {
-	const set$1 = new RemoteJWKSet(url$1, options);
-	const remoteJWKSet = async (protectedHeader, token) => set$1.getKey(protectedHeader, token);
-	Object.defineProperties(remoteJWKSet, {
-		coolingDown: {
-			get: () => set$1.coolingDown(),
-			enumerable: true,
-			configurable: false
-		},
-		fresh: {
-			get: () => set$1.fresh(),
-			enumerable: true,
-			configurable: false
-		},
-		reload: {
-			value: () => set$1.reload(),
-			enumerable: true,
-			configurable: false,
-			writable: false
-		},
-		reloading: {
-			get: () => set$1.pendingFetch(),
-			enumerable: true,
-			configurable: false
-		},
-		jwks: {
-			value: () => set$1.jwks(),
-			enumerable: true,
-			configurable: false,
-			writable: false
-		}
-	});
-	return remoteJWKSet;
-}
-function decodeProtectedHeader(token) {
-	let protectedB64u;
-	if (typeof token === "string") {
-		const parts = token.split(".");
-		if (parts.length === 3 || parts.length === 5) [protectedB64u] = parts;
-	} else if (typeof token === "object" && token) if ("protected" in token) protectedB64u = token.protected;
-	else throw new TypeError("Token does not contain a Protected Header");
-	try {
-		if (typeof protectedB64u !== "string" || !protectedB64u) throw new Error();
-		const result = JSON.parse(decoder.decode(decode$1(protectedB64u)));
-		if (!isObject(result)) throw new Error();
-		return result;
-	} catch {
-		throw new TypeError("Invalid Token or Protected Header formatting");
-	}
-}
-function decodeJwt(jwt$1) {
-	if (typeof jwt$1 !== "string") throw new JWTInvalid("JWTs must use Compact JWS serialization, JWT must be a string");
-	const { 1: payload, length } = jwt$1.split(".");
-	if (length === 5) throw new JWTInvalid("Only JWTs using Compact JWS serialization can be decoded");
-	if (length !== 3) throw new JWTInvalid("Invalid JWT");
-	if (!payload) throw new JWTInvalid("JWTs must contain a payload");
-	let decoded;
-	try {
-		decoded = decode$1(payload);
-	} catch {
-		throw new JWTInvalid("Failed to base64url decode the payload");
-	}
-	let result;
-	try {
-		result = JSON.parse(decoder.decode(decoded));
-	} catch {
-		throw new JWTInvalid("Failed to parse the decoded payload as JSON");
-	}
-	if (!isObject(result)) throw new JWTInvalid("Invalid JWT Claims Set");
-	return result;
-}
-async function signJWT(payload, secret, expiresIn = 3600) {
-	return await new SignJWT(payload).setProtectedHeader({ alg: "HS256" }).setIssuedAt().setExpirationTime(Math.floor(Date.now() / 1e3) + expiresIn).sign(new TextEncoder().encode(secret));
-}
-async function verifyJWT(token, secret) {
-	try {
-		return (await jwtVerify(token, new TextEncoder().encode(secret))).payload;
-	} catch {
-		return null;
-	}
-}
-var info = new Uint8Array([
-	66,
-	101,
-	116,
-	116,
-	101,
-	114,
-	65,
-	117,
-	116,
-	104,
-	46,
-	106,
-	115,
-	32,
-	71,
-	101,
-	110,
-	101,
-	114,
-	97,
-	116,
-	101,
-	100,
-	32,
-	69,
-	110,
-	99,
-	114,
-	121,
-	112,
-	116,
-	105,
-	111,
-	110,
-	32,
-	75,
-	101,
-	121
-]);
-var now = () => Date.now() / 1e3 | 0;
-var alg = "dir";
-var enc = "A256CBC-HS512";
-function deriveEncryptionSecret(secret, salt) {
-	return hkdf(sha256, new TextEncoder().encode(secret), new TextEncoder().encode(salt), info, 64);
-}
-function getCurrentSecret(secret) {
-	if (typeof secret === "string") return secret;
-	const value = secret.keys.get(secret.currentVersion);
-	if (!value) throw new Error(`Secret version ${secret.currentVersion} not found in keys`);
-	return value;
-}
-function getAllSecrets(secret) {
-	if (typeof secret === "string") return [{
-		version: 0,
-		value: secret
-	}];
-	const result = [];
-	for (const [version$3, value] of secret.keys) result.push({
-		version: version$3,
-		value
-	});
-	if (secret.legacySecret && !result.some((s) => s.value === secret.legacySecret)) result.push({
-		version: -1,
-		value: secret.legacySecret
-	});
-	return result;
-}
-async function symmetricEncodeJWT(payload, secret, salt, expiresIn = 3600) {
-	const encryptionSecret = deriveEncryptionSecret(getCurrentSecret(secret), salt);
-	const thumbprint = await calculateJwkThumbprint({
-		kty: "oct",
-		k: encode$1(encryptionSecret)
-	}, "sha256");
-	return await new EncryptJWT(payload).setProtectedHeader({
-		alg,
-		enc,
-		kid: thumbprint
-	}).setIssuedAt().setExpirationTime(now() + expiresIn).setJti(crypto.randomUUID()).encrypt(encryptionSecret);
-}
-var jwtDecryptOpts = {
-	clockTolerance: 15,
-	keyManagementAlgorithms: [alg],
-	contentEncryptionAlgorithms: [enc, "A256GCM"]
-};
-async function symmetricDecodeJWT(token, secret, salt) {
-	if (!token) return null;
-	let hasKid = false;
-	try {
-		hasKid = decodeProtectedHeader(token).kid !== void 0;
-	} catch {
-		return null;
-	}
-	try {
-		const secrets = getAllSecrets(secret);
-		const { payload } = await jwtDecrypt(token, async (protectedHeader) => {
-			const kid = protectedHeader.kid;
-			if (kid !== void 0) {
-				for (const s of secrets) {
-					const encryptionSecret = deriveEncryptionSecret(s.value, salt);
-					if (kid === await calculateJwkThumbprint({
-						kty: "oct",
-						k: encode$1(encryptionSecret)
-					}, "sha256")) return encryptionSecret;
-				}
-				throw new Error("no matching decryption secret");
-			}
-			if (secrets.length === 1) return deriveEncryptionSecret(secrets[0].value, salt);
-			return deriveEncryptionSecret(secrets[0].value, salt);
-		}, jwtDecryptOpts);
-		return payload;
-	} catch {
-		if (hasKid) return null;
-		const secrets = getAllSecrets(secret);
-		if (secrets.length <= 1) return null;
-		for (let i = 1; i < secrets.length; i++) try {
-			const s = secrets[i];
-			const { payload } = await jwtDecrypt(token, deriveEncryptionSecret(s.value, salt), jwtDecryptOpts);
-			return payload;
-		} catch {
-			continue;
-		}
-		return null;
-	}
-}
-var getAuthTables = (options) => {
-	const pluginSchema = (options.plugins ?? []).reduce((acc, plugin) => {
-		const schema$1 = plugin.schema;
-		if (!schema$1) return acc;
-		for (const [key, value] of Object.entries(schema$1)) acc[key] = {
-			fields: {
-				...acc[key]?.fields,
-				...value.fields
-			},
-			modelName: value.modelName || key
-		};
-		return acc;
-	}, {});
-	const shouldAddRateLimitTable = options.rateLimit?.storage === "database";
-	const rateLimitTable = { rateLimit: {
-		modelName: options.rateLimit?.modelName || "rateLimit",
-		fields: {
-			key: {
-				type: "string",
-				unique: true,
-				required: true,
-				fieldName: options.rateLimit?.fields?.key || "key"
-			},
-			count: {
-				type: "number",
-				required: true,
-				fieldName: options.rateLimit?.fields?.count || "count"
-			},
-			lastRequest: {
-				type: "number",
-				bigint: true,
-				required: true,
-				fieldName: options.rateLimit?.fields?.lastRequest || "lastRequest",
-				defaultValue: () => Date.now()
-			}
-		}
-	} };
-	const { user: user$1, session: session$1, account: account$1, verification: verification$1, ...pluginTables } = pluginSchema;
-	const verificationTable = { verification: {
-		modelName: options.verification?.modelName || "verification",
-		fields: {
-			identifier: {
-				type: "string",
-				required: true,
-				fieldName: options.verification?.fields?.identifier || "identifier",
-				index: true
-			},
-			value: {
-				type: "string",
-				required: true,
-				fieldName: options.verification?.fields?.value || "value"
-			},
-			expiresAt: {
-				type: "date",
-				required: true,
-				fieldName: options.verification?.fields?.expiresAt || "expiresAt"
-			},
-			createdAt: {
-				type: "date",
-				required: true,
-				defaultValue: () => /* @__PURE__ */ new Date(),
-				fieldName: options.verification?.fields?.createdAt || "createdAt"
-			},
-			updatedAt: {
-				type: "date",
-				required: true,
-				defaultValue: () => /* @__PURE__ */ new Date(),
-				onUpdate: () => /* @__PURE__ */ new Date(),
-				fieldName: options.verification?.fields?.updatedAt || "updatedAt"
-			},
-			...verification$1?.fields,
-			...options.verification?.additionalFields
-		},
-		order: 4
-	} };
-	const sessionTable = { session: {
-		modelName: options.session?.modelName || "session",
-		fields: {
-			expiresAt: {
-				type: "date",
-				required: true,
-				fieldName: options.session?.fields?.expiresAt || "expiresAt"
-			},
-			token: {
-				type: "string",
-				required: true,
-				fieldName: options.session?.fields?.token || "token",
-				unique: true
-			},
-			createdAt: {
-				type: "date",
-				required: true,
-				fieldName: options.session?.fields?.createdAt || "createdAt",
-				defaultValue: () => /* @__PURE__ */ new Date()
-			},
-			updatedAt: {
-				type: "date",
-				required: true,
-				fieldName: options.session?.fields?.updatedAt || "updatedAt",
-				onUpdate: () => /* @__PURE__ */ new Date()
-			},
-			ipAddress: {
-				type: "string",
-				required: false,
-				fieldName: options.session?.fields?.ipAddress || "ipAddress"
-			},
-			userAgent: {
-				type: "string",
-				required: false,
-				fieldName: options.session?.fields?.userAgent || "userAgent"
-			},
-			userId: {
-				type: "string",
-				fieldName: options.session?.fields?.userId || "userId",
-				references: {
-					model: options.user?.modelName || "user",
-					field: "id",
-					onDelete: "cascade"
-				},
-				required: true,
-				index: true
-			},
-			...session$1?.fields,
-			...options.session?.additionalFields
-		},
-		order: 2
-	} };
-	return {
-		user: {
-			modelName: options.user?.modelName || "user",
-			fields: {
-				name: {
-					type: "string",
-					required: true,
-					fieldName: options.user?.fields?.name || "name",
-					sortable: true
-				},
-				email: {
-					type: "string",
-					unique: true,
-					required: true,
-					fieldName: options.user?.fields?.email || "email",
-					sortable: true
-				},
-				emailVerified: {
-					type: "boolean",
-					defaultValue: false,
-					required: true,
-					fieldName: options.user?.fields?.emailVerified || "emailVerified",
-					input: false
-				},
-				image: {
-					type: "string",
-					required: false,
-					fieldName: options.user?.fields?.image || "image"
-				},
-				createdAt: {
-					type: "date",
-					defaultValue: () => /* @__PURE__ */ new Date(),
-					required: true,
-					fieldName: options.user?.fields?.createdAt || "createdAt"
-				},
-				updatedAt: {
-					type: "date",
-					defaultValue: () => /* @__PURE__ */ new Date(),
-					onUpdate: () => /* @__PURE__ */ new Date(),
-					required: true,
-					fieldName: options.user?.fields?.updatedAt || "updatedAt"
-				},
-				...user$1?.fields,
-				...options.user?.additionalFields
-			},
-			order: 1
-		},
-		...!options.secondaryStorage || options.session?.storeSessionInDatabase ? sessionTable : {},
-		account: {
-			modelName: options.account?.modelName || "account",
-			fields: {
-				accountId: {
-					type: "string",
-					required: true,
-					fieldName: options.account?.fields?.accountId || "accountId"
-				},
-				providerId: {
-					type: "string",
-					required: true,
-					fieldName: options.account?.fields?.providerId || "providerId"
-				},
-				userId: {
-					type: "string",
-					references: {
-						model: options.user?.modelName || "user",
-						field: "id",
-						onDelete: "cascade"
-					},
-					required: true,
-					fieldName: options.account?.fields?.userId || "userId",
-					index: true
-				},
-				accessToken: {
-					type: "string",
-					required: false,
-					returned: false,
-					fieldName: options.account?.fields?.accessToken || "accessToken"
-				},
-				refreshToken: {
-					type: "string",
-					required: false,
-					returned: false,
-					fieldName: options.account?.fields?.refreshToken || "refreshToken"
-				},
-				idToken: {
-					type: "string",
-					required: false,
-					returned: false,
-					fieldName: options.account?.fields?.idToken || "idToken"
-				},
-				accessTokenExpiresAt: {
-					type: "date",
-					required: false,
-					returned: false,
-					fieldName: options.account?.fields?.accessTokenExpiresAt || "accessTokenExpiresAt"
-				},
-				refreshTokenExpiresAt: {
-					type: "date",
-					required: false,
-					returned: false,
-					fieldName: options.account?.fields?.refreshTokenExpiresAt || "refreshTokenExpiresAt"
-				},
-				scope: {
-					type: "string",
-					required: false,
-					fieldName: options.account?.fields?.scope || "scope"
-				},
-				password: {
-					type: "string",
-					required: false,
-					returned: false,
-					fieldName: options.account?.fields?.password || "password"
-				},
-				createdAt: {
-					type: "date",
-					required: true,
-					fieldName: options.account?.fields?.createdAt || "createdAt",
-					defaultValue: () => /* @__PURE__ */ new Date()
-				},
-				updatedAt: {
-					type: "date",
-					required: true,
-					fieldName: options.account?.fields?.updatedAt || "updatedAt",
-					onUpdate: () => /* @__PURE__ */ new Date()
-				},
-				...account$1?.fields,
-				...options.account?.additionalFields
-			},
-			order: 3
-		},
-		...!options.secondaryStorage || options.verification?.storeInDatabase ? verificationTable : {},
-		...pluginTables,
-		...shouldAddRateLimitTable ? rateLimitTable : {}
-	};
-};
 var coreSchema = object$1({
 	id: string$2(),
 	createdAt: date$1().default(() => /* @__PURE__ */ new Date()),
@@ -32462,1333 +33609,6 @@ function formatMethod(method) {
 function formatAction(action) {
 	return `${TTY_COLORS.dim}(${action})${TTY_COLORS.reset}`;
 }
-var entityKind = Symbol.for("drizzle:entityKind");
-function is(value, type) {
-	if (!value || typeof value !== "object") return false;
-	if (value instanceof type) return true;
-	if (!Object.prototype.hasOwnProperty.call(type, entityKind)) throw new Error(`Class "${type.name ?? "<unknown>"}" doesn't look like a Drizzle entity. If this is incorrect and the class is provided by Drizzle, please report this as a bug.`);
-	let cls = Object.getPrototypeOf(value).constructor;
-	if (cls) while (cls) {
-		if (entityKind in cls && cls[entityKind] === type[entityKind]) return true;
-		cls = Object.getPrototypeOf(cls);
-	}
-	return false;
-}
-var Column = class {
-	constructor(table, config$2) {
-		this.table = table;
-		this.config = config$2;
-		this.name = config$2.name;
-		this.keyAsName = config$2.keyAsName;
-		this.notNull = config$2.notNull;
-		this.default = config$2.default;
-		this.defaultFn = config$2.defaultFn;
-		this.onUpdateFn = config$2.onUpdateFn;
-		this.hasDefault = config$2.hasDefault;
-		this.primary = config$2.primaryKey;
-		this.isUnique = config$2.isUnique;
-		this.uniqueName = config$2.uniqueName;
-		this.uniqueType = config$2.uniqueType;
-		this.dataType = config$2.dataType;
-		this.columnType = config$2.columnType;
-		this.generated = config$2.generated;
-		this.generatedIdentity = config$2.generatedIdentity;
-	}
-	static [entityKind] = "Column";
-	name;
-	keyAsName;
-	primary;
-	notNull;
-	default;
-	defaultFn;
-	onUpdateFn;
-	hasDefault;
-	isUnique;
-	uniqueName;
-	uniqueType;
-	dataType;
-	columnType;
-	enumValues = void 0;
-	generated = void 0;
-	generatedIdentity = void 0;
-	config;
-	mapFromDriverValue(value) {
-		return value;
-	}
-	mapToDriverValue(value) {
-		return value;
-	}
-	shouldDisableInsert() {
-		return this.config.generated !== void 0 && this.config.generated.type !== "byDefault";
-	}
-};
-var ColumnBuilder = class {
-	static [entityKind] = "ColumnBuilder";
-	config;
-	constructor(name, dataType, columnType) {
-		this.config = {
-			name,
-			keyAsName: name === "",
-			notNull: false,
-			default: void 0,
-			hasDefault: false,
-			primaryKey: false,
-			isUnique: false,
-			uniqueName: void 0,
-			uniqueType: void 0,
-			dataType,
-			columnType,
-			generated: void 0
-		};
-	}
-	$type() {
-		return this;
-	}
-	notNull() {
-		this.config.notNull = true;
-		return this;
-	}
-	default(value) {
-		this.config.default = value;
-		this.config.hasDefault = true;
-		return this;
-	}
-	$defaultFn(fn) {
-		this.config.defaultFn = fn;
-		this.config.hasDefault = true;
-		return this;
-	}
-	$default = this.$defaultFn;
-	$onUpdateFn(fn) {
-		this.config.onUpdateFn = fn;
-		this.config.hasDefault = true;
-		return this;
-	}
-	$onUpdate = this.$onUpdateFn;
-	primaryKey() {
-		this.config.primaryKey = true;
-		this.config.notNull = true;
-		return this;
-	}
-	setName(name) {
-		if (this.config.name !== "") return;
-		this.config.name = name;
-	}
-};
-var TableName = Symbol.for("drizzle:Name");
-var ForeignKeyBuilder$1 = class {
-	static [entityKind] = "PgForeignKeyBuilder";
-	reference;
-	_onUpdate = "no action";
-	_onDelete = "no action";
-	constructor(config$2, actions) {
-		this.reference = () => {
-			const { name, columns, foreignColumns } = config$2();
-			return {
-				name,
-				columns,
-				foreignTable: foreignColumns[0].table,
-				foreignColumns
-			};
-		};
-		if (actions) {
-			this._onUpdate = actions.onUpdate;
-			this._onDelete = actions.onDelete;
-		}
-	}
-	onUpdate(action) {
-		this._onUpdate = action === void 0 ? "no action" : action;
-		return this;
-	}
-	onDelete(action) {
-		this._onDelete = action === void 0 ? "no action" : action;
-		return this;
-	}
-	build(table) {
-		return new ForeignKey$1(table, this);
-	}
-};
-var ForeignKey$1 = class {
-	constructor(table, builder) {
-		this.table = table;
-		this.reference = builder.reference;
-		this.onUpdate = builder._onUpdate;
-		this.onDelete = builder._onDelete;
-	}
-	static [entityKind] = "PgForeignKey";
-	reference;
-	onUpdate;
-	onDelete;
-	getName() {
-		const { name, columns, foreignColumns } = this.reference();
-		const columnNames = columns.map((column) => column.name);
-		const foreignColumnNames = foreignColumns.map((column) => column.name);
-		const chunks = [
-			this.table[TableName],
-			...columnNames,
-			foreignColumns[0].table[TableName],
-			...foreignColumnNames
-		];
-		return name ?? `${chunks.join("_")}_fk`;
-	}
-};
-function iife(fn, ...args) {
-	return fn(...args);
-}
-function uniqueKeyName$1(table, columns) {
-	return `${table[TableName]}_${columns.join("_")}_unique`;
-}
-function parsePgArrayValue(arrayString, startFrom, inQuotes) {
-	for (let i = startFrom; i < arrayString.length; i++) {
-		const char = arrayString[i];
-		if (char === "\\") {
-			i++;
-			continue;
-		}
-		if (char === "\"") return [arrayString.slice(startFrom, i).replace(/\\/g, ""), i + 1];
-		if (inQuotes) continue;
-		if (char === "," || char === "}") return [arrayString.slice(startFrom, i).replace(/\\/g, ""), i];
-	}
-	return [arrayString.slice(startFrom).replace(/\\/g, ""), arrayString.length];
-}
-function parsePgNestedArray(arrayString, startFrom = 0) {
-	const result = [];
-	let i = startFrom;
-	let lastCharIsComma = false;
-	while (i < arrayString.length) {
-		const char = arrayString[i];
-		if (char === ",") {
-			if (lastCharIsComma || i === startFrom) result.push("");
-			lastCharIsComma = true;
-			i++;
-			continue;
-		}
-		lastCharIsComma = false;
-		if (char === "\\") {
-			i += 2;
-			continue;
-		}
-		if (char === "\"") {
-			const [value2, startFrom2] = parsePgArrayValue(arrayString, i + 1, true);
-			result.push(value2);
-			i = startFrom2;
-			continue;
-		}
-		if (char === "}") return [result, i + 1];
-		if (char === "{") {
-			const [value2, startFrom2] = parsePgNestedArray(arrayString, i + 1);
-			result.push(value2);
-			i = startFrom2;
-			continue;
-		}
-		const [value, newStartFrom] = parsePgArrayValue(arrayString, i, false);
-		result.push(value);
-		i = newStartFrom;
-	}
-	return [result, i];
-}
-function parsePgArray(arrayString) {
-	const [result] = parsePgNestedArray(arrayString, 1);
-	return result;
-}
-function makePgArray(array$2) {
-	return `{${array$2.map((item) => {
-		if (Array.isArray(item)) return makePgArray(item);
-		if (typeof item === "string") return `"${item.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
-		return `${item}`;
-	}).join(",")}}`;
-}
-var PgColumnBuilder = class extends ColumnBuilder {
-	foreignKeyConfigs = [];
-	static [entityKind] = "PgColumnBuilder";
-	array(size) {
-		return new PgArrayBuilder(this.config.name, this, size);
-	}
-	references(ref, actions = {}) {
-		this.foreignKeyConfigs.push({
-			ref,
-			actions
-		});
-		return this;
-	}
-	unique(name, config$2) {
-		this.config.isUnique = true;
-		this.config.uniqueName = name;
-		this.config.uniqueType = config$2?.nulls;
-		return this;
-	}
-	generatedAlwaysAs(as) {
-		this.config.generated = {
-			as,
-			type: "always",
-			mode: "stored"
-		};
-		return this;
-	}
-	buildForeignKeys(column, table) {
-		return this.foreignKeyConfigs.map(({ ref, actions }) => {
-			return iife((ref2, actions2) => {
-				const builder = new ForeignKeyBuilder$1(() => {
-					const foreignColumn = ref2();
-					return {
-						columns: [column],
-						foreignColumns: [foreignColumn]
-					};
-				});
-				if (actions2.onUpdate) builder.onUpdate(actions2.onUpdate);
-				if (actions2.onDelete) builder.onDelete(actions2.onDelete);
-				return builder.build(table);
-			}, ref, actions);
-		});
-	}
-	buildExtraConfigColumn(table) {
-		return new ExtraConfigColumn(table, this.config);
-	}
-};
-var PgColumn = class extends Column {
-	constructor(table, config$2) {
-		if (!config$2.uniqueName) config$2.uniqueName = uniqueKeyName$1(table, [config$2.name]);
-		super(table, config$2);
-		this.table = table;
-	}
-	static [entityKind] = "PgColumn";
-};
-var ExtraConfigColumn = class extends PgColumn {
-	static [entityKind] = "ExtraConfigColumn";
-	getSQLType() {
-		return this.getSQLType();
-	}
-	indexConfig = {
-		order: this.config.order ?? "asc",
-		nulls: this.config.nulls ?? "last",
-		opClass: this.config.opClass
-	};
-	defaultConfig = {
-		order: "asc",
-		nulls: "last",
-		opClass: void 0
-	};
-	asc() {
-		this.indexConfig.order = "asc";
-		return this;
-	}
-	desc() {
-		this.indexConfig.order = "desc";
-		return this;
-	}
-	nullsFirst() {
-		this.indexConfig.nulls = "first";
-		return this;
-	}
-	nullsLast() {
-		this.indexConfig.nulls = "last";
-		return this;
-	}
-	op(opClass) {
-		this.indexConfig.opClass = opClass;
-		return this;
-	}
-};
-var PgArrayBuilder = class extends PgColumnBuilder {
-	static [entityKind] = "PgArrayBuilder";
-	constructor(name, baseBuilder, size) {
-		super(name, "array", "PgArray");
-		this.config.baseBuilder = baseBuilder;
-		this.config.size = size;
-	}
-	build(table) {
-		const baseColumn = this.config.baseBuilder.build(table);
-		return new PgArray(table, this.config, baseColumn);
-	}
-};
-var PgArray = class PgArray extends PgColumn {
-	constructor(table, config$2, baseColumn, range) {
-		super(table, config$2);
-		this.baseColumn = baseColumn;
-		this.range = range;
-		this.size = config$2.size;
-	}
-	size;
-	static [entityKind] = "PgArray";
-	getSQLType() {
-		return `${this.baseColumn.getSQLType()}[${typeof this.size === "number" ? this.size : ""}]`;
-	}
-	mapFromDriverValue(value) {
-		if (typeof value === "string") value = parsePgArray(value);
-		return value.map((v) => this.baseColumn.mapFromDriverValue(v));
-	}
-	mapToDriverValue(value, isNestedArray = false) {
-		const a = value.map((v) => v === null ? null : is(this.baseColumn, PgArray) ? this.baseColumn.mapToDriverValue(v, true) : this.baseColumn.mapToDriverValue(v));
-		if (isNestedArray) return a;
-		return makePgArray(a);
-	}
-};
-var isPgEnumSym = Symbol.for("drizzle:isPgEnum");
-function isPgEnum(obj) {
-	return !!obj && typeof obj === "function" && isPgEnumSym in obj && obj[isPgEnumSym] === true;
-}
-var Subquery = class {
-	static [entityKind] = "Subquery";
-	constructor(sql$1, fields, alias, isWith = false, usedTables = []) {
-		this._ = {
-			brand: "Subquery",
-			sql: sql$1,
-			selectedFields: fields,
-			alias,
-			isWith,
-			usedTables
-		};
-	}
-};
-var WithSubquery = class extends Subquery {
-	static [entityKind] = "WithSubquery";
-};
-var tracer = { startActiveSpan(name, fn) {
-	return fn();
-} };
-var ViewBaseConfig = Symbol.for("drizzle:ViewBaseConfig");
-var Schema = Symbol.for("drizzle:Schema");
-var Columns = Symbol.for("drizzle:Columns");
-var ExtraConfigColumns = Symbol.for("drizzle:ExtraConfigColumns");
-var OriginalName = Symbol.for("drizzle:OriginalName");
-var BaseName = Symbol.for("drizzle:BaseName");
-var IsAlias = Symbol.for("drizzle:IsAlias");
-var ExtraConfigBuilder = Symbol.for("drizzle:ExtraConfigBuilder");
-var IsDrizzleTable = Symbol.for("drizzle:IsDrizzleTable");
-var Table = class {
-	static [entityKind] = "Table";
-	static Symbol = {
-		Name: TableName,
-		Schema,
-		OriginalName,
-		Columns,
-		ExtraConfigColumns,
-		BaseName,
-		IsAlias,
-		ExtraConfigBuilder
-	};
-	[TableName];
-	[OriginalName];
-	[Schema];
-	[Columns];
-	[ExtraConfigColumns];
-	[BaseName];
-	[IsAlias] = false;
-	[IsDrizzleTable] = true;
-	[ExtraConfigBuilder] = void 0;
-	constructor(name, schema$1, baseName) {
-		this[TableName] = this[OriginalName] = name;
-		this[Schema] = schema$1;
-		this[BaseName] = baseName;
-	}
-};
-function getTableName(table) {
-	return table[TableName];
-}
-function getTableUniqueName(table) {
-	return `${table[Schema] ?? "public"}.${table[TableName]}`;
-}
-function isSQLWrapper(value) {
-	return value !== null && value !== void 0 && typeof value.getSQL === "function";
-}
-function mergeQueries(queries) {
-	const result = {
-		sql: "",
-		params: []
-	};
-	for (const query of queries) {
-		result.sql += query.sql;
-		result.params.push(...query.params);
-		if (query.typings?.length) {
-			if (!result.typings) result.typings = [];
-			result.typings.push(...query.typings);
-		}
-	}
-	return result;
-}
-var StringChunk = class {
-	static [entityKind] = "StringChunk";
-	value;
-	constructor(value) {
-		this.value = Array.isArray(value) ? value : [value];
-	}
-	getSQL() {
-		return new SQL([this]);
-	}
-};
-var SQL = class SQL {
-	constructor(queryChunks) {
-		this.queryChunks = queryChunks;
-		for (const chunk of queryChunks) if (is(chunk, Table)) {
-			const schemaName = chunk[Table.Symbol.Schema];
-			this.usedTables.push(schemaName === void 0 ? chunk[Table.Symbol.Name] : schemaName + "." + chunk[Table.Symbol.Name]);
-		}
-	}
-	static [entityKind] = "SQL";
-	decoder = noopDecoder;
-	shouldInlineParams = false;
-	usedTables = [];
-	append(query) {
-		this.queryChunks.push(...query.queryChunks);
-		return this;
-	}
-	toQuery(config$2) {
-		return tracer.startActiveSpan("drizzle.buildSQL", (span) => {
-			const query = this.buildQueryFromSourceParams(this.queryChunks, config$2);
-			span?.setAttributes({
-				"drizzle.query.text": query.sql,
-				"drizzle.query.params": JSON.stringify(query.params)
-			});
-			return query;
-		});
-	}
-	buildQueryFromSourceParams(chunks, _config) {
-		const config$2 = Object.assign({}, _config, {
-			inlineParams: _config.inlineParams || this.shouldInlineParams,
-			paramStartIndex: _config.paramStartIndex || { value: 0 }
-		});
-		const { casing, escapeName, escapeParam, prepareTyping, inlineParams, paramStartIndex } = config$2;
-		return mergeQueries(chunks.map((chunk) => {
-			if (is(chunk, StringChunk)) return {
-				sql: chunk.value.join(""),
-				params: []
-			};
-			if (is(chunk, Name)) return {
-				sql: escapeName(chunk.value),
-				params: []
-			};
-			if (chunk === void 0) return {
-				sql: "",
-				params: []
-			};
-			if (Array.isArray(chunk)) {
-				const result = [new StringChunk("(")];
-				for (const [i, p] of chunk.entries()) {
-					result.push(p);
-					if (i < chunk.length - 1) result.push(new StringChunk(", "));
-				}
-				result.push(new StringChunk(")"));
-				return this.buildQueryFromSourceParams(result, config$2);
-			}
-			if (is(chunk, SQL)) return this.buildQueryFromSourceParams(chunk.queryChunks, {
-				...config$2,
-				inlineParams: inlineParams || chunk.shouldInlineParams
-			});
-			if (is(chunk, Table)) {
-				const schemaName = chunk[Table.Symbol.Schema];
-				const tableName = chunk[Table.Symbol.Name];
-				return {
-					sql: schemaName === void 0 || chunk[IsAlias] ? escapeName(tableName) : escapeName(schemaName) + "." + escapeName(tableName),
-					params: []
-				};
-			}
-			if (is(chunk, Column)) {
-				const columnName = casing.getColumnCasing(chunk);
-				if (_config.invokeSource === "indexes") return {
-					sql: escapeName(columnName),
-					params: []
-				};
-				const schemaName = chunk.table[Table.Symbol.Schema];
-				return {
-					sql: chunk.table[IsAlias] || schemaName === void 0 ? escapeName(chunk.table[Table.Symbol.Name]) + "." + escapeName(columnName) : escapeName(schemaName) + "." + escapeName(chunk.table[Table.Symbol.Name]) + "." + escapeName(columnName),
-					params: []
-				};
-			}
-			if (is(chunk, View)) {
-				const schemaName = chunk[ViewBaseConfig].schema;
-				const viewName = chunk[ViewBaseConfig].name;
-				return {
-					sql: schemaName === void 0 || chunk[ViewBaseConfig].isAlias ? escapeName(viewName) : escapeName(schemaName) + "." + escapeName(viewName),
-					params: []
-				};
-			}
-			if (is(chunk, Param)) {
-				if (is(chunk.value, Placeholder)) return {
-					sql: escapeParam(paramStartIndex.value++, chunk),
-					params: [chunk],
-					typings: ["none"]
-				};
-				const mappedValue = chunk.value === null ? null : chunk.encoder.mapToDriverValue(chunk.value);
-				if (is(mappedValue, SQL)) return this.buildQueryFromSourceParams([mappedValue], config$2);
-				if (inlineParams) return {
-					sql: this.mapInlineParam(mappedValue, config$2),
-					params: []
-				};
-				let typings = ["none"];
-				if (prepareTyping) typings = [prepareTyping(chunk.encoder)];
-				return {
-					sql: escapeParam(paramStartIndex.value++, mappedValue),
-					params: [mappedValue],
-					typings
-				};
-			}
-			if (is(chunk, Placeholder)) return {
-				sql: escapeParam(paramStartIndex.value++, chunk),
-				params: [chunk],
-				typings: ["none"]
-			};
-			if (is(chunk, SQL.Aliased) && chunk.fieldAlias !== void 0) return {
-				sql: escapeName(chunk.fieldAlias),
-				params: []
-			};
-			if (is(chunk, Subquery)) {
-				if (chunk._.isWith) return {
-					sql: escapeName(chunk._.alias),
-					params: []
-				};
-				return this.buildQueryFromSourceParams([
-					new StringChunk("("),
-					chunk._.sql,
-					new StringChunk(") "),
-					new Name(chunk._.alias)
-				], config$2);
-			}
-			if (isPgEnum(chunk)) {
-				if (chunk.schema) return {
-					sql: escapeName(chunk.schema) + "." + escapeName(chunk.enumName),
-					params: []
-				};
-				return {
-					sql: escapeName(chunk.enumName),
-					params: []
-				};
-			}
-			if (isSQLWrapper(chunk)) {
-				if (chunk.shouldOmitSQLParens?.()) return this.buildQueryFromSourceParams([chunk.getSQL()], config$2);
-				return this.buildQueryFromSourceParams([
-					new StringChunk("("),
-					chunk.getSQL(),
-					new StringChunk(")")
-				], config$2);
-			}
-			if (inlineParams) return {
-				sql: this.mapInlineParam(chunk, config$2),
-				params: []
-			};
-			return {
-				sql: escapeParam(paramStartIndex.value++, chunk),
-				params: [chunk],
-				typings: ["none"]
-			};
-		}));
-	}
-	mapInlineParam(chunk, { escapeString }) {
-		if (chunk === null) return "null";
-		if (typeof chunk === "number" || typeof chunk === "boolean") return chunk.toString();
-		if (typeof chunk === "string") return escapeString(chunk);
-		if (typeof chunk === "object") {
-			const mappedValueAsString = chunk.toString();
-			if (mappedValueAsString === "[object Object]") return escapeString(JSON.stringify(chunk));
-			return escapeString(mappedValueAsString);
-		}
-		throw new Error("Unexpected param value: " + chunk);
-	}
-	getSQL() {
-		return this;
-	}
-	as(alias) {
-		if (alias === void 0) return this;
-		return new SQL.Aliased(this, alias);
-	}
-	mapWith(decoder$1) {
-		this.decoder = typeof decoder$1 === "function" ? { mapFromDriverValue: decoder$1 } : decoder$1;
-		return this;
-	}
-	inlineParams() {
-		this.shouldInlineParams = true;
-		return this;
-	}
-	if(condition) {
-		return condition ? this : void 0;
-	}
-};
-var Name = class {
-	constructor(value) {
-		this.value = value;
-	}
-	static [entityKind] = "Name";
-	brand;
-	getSQL() {
-		return new SQL([this]);
-	}
-};
-function isDriverValueEncoder(value) {
-	return typeof value === "object" && value !== null && "mapToDriverValue" in value && typeof value.mapToDriverValue === "function";
-}
-var noopDecoder = { mapFromDriverValue: (value) => value };
-var noopEncoder = { mapToDriverValue: (value) => value };
-({
-	...noopDecoder,
-	...noopEncoder
-});
-var Param = class {
-	constructor(value, encoder$1 = noopEncoder) {
-		this.value = value;
-		this.encoder = encoder$1;
-	}
-	static [entityKind] = "Param";
-	brand;
-	getSQL() {
-		return new SQL([this]);
-	}
-};
-function sql(strings, ...params) {
-	const queryChunks = [];
-	if (params.length > 0 || strings.length > 0 && strings[0] !== "") queryChunks.push(new StringChunk(strings[0]));
-	for (const [paramIndex, param2] of params.entries()) queryChunks.push(param2, new StringChunk(strings[paramIndex + 1]));
-	return new SQL(queryChunks);
-}
-((sql2) => {
-	function empty() {
-		return new SQL([]);
-	}
-	sql2.empty = empty;
-	function fromList(list) {
-		return new SQL(list);
-	}
-	sql2.fromList = fromList;
-	function raw$1(str) {
-		return new SQL([new StringChunk(str)]);
-	}
-	sql2.raw = raw$1;
-	function join(chunks, separator) {
-		const result = [];
-		for (const [i, chunk] of chunks.entries()) {
-			if (i > 0 && separator !== void 0) result.push(separator);
-			result.push(chunk);
-		}
-		return new SQL(result);
-	}
-	sql2.join = join;
-	function identifier(value) {
-		return new Name(value);
-	}
-	sql2.identifier = identifier;
-	function placeholder2(name2) {
-		return new Placeholder(name2);
-	}
-	sql2.placeholder = placeholder2;
-	function param2(value, encoder$1) {
-		return new Param(value, encoder$1);
-	}
-	sql2.param = param2;
-})(sql || (sql = {}));
-((SQL2) => {
-	class Aliased {
-		constructor(sql2, fieldAlias) {
-			this.sql = sql2;
-			this.fieldAlias = fieldAlias;
-		}
-		static [entityKind] = "SQL.Aliased";
-		isSelectionField = false;
-		getSQL() {
-			return this.sql;
-		}
-		clone() {
-			return new Aliased(this.sql, this.fieldAlias);
-		}
-	}
-	SQL2.Aliased = Aliased;
-})(SQL || (SQL = {}));
-var Placeholder = class {
-	constructor(name2) {
-		this.name = name2;
-	}
-	static [entityKind] = "Placeholder";
-	getSQL() {
-		return new SQL([this]);
-	}
-};
-function fillPlaceholders(params, values) {
-	return params.map((p) => {
-		if (is(p, Placeholder)) {
-			if (!(p.name in values)) throw new Error(`No value for placeholder "${p.name}" was provided`);
-			return values[p.name];
-		}
-		if (is(p, Param) && is(p.value, Placeholder)) {
-			if (!(p.value.name in values)) throw new Error(`No value for placeholder "${p.value.name}" was provided`);
-			return p.encoder.mapToDriverValue(values[p.value.name]);
-		}
-		return p;
-	});
-}
-var IsDrizzleView = Symbol.for("drizzle:IsDrizzleView");
-var View = class {
-	static [entityKind] = "View";
-	[ViewBaseConfig];
-	[IsDrizzleView] = true;
-	constructor({ name: name2, schema: schema$1, selectedFields, query }) {
-		this[ViewBaseConfig] = {
-			name: name2,
-			originalName: name2,
-			schema: schema$1,
-			selectedFields,
-			query,
-			isExisting: !query,
-			isAlias: false
-		};
-	}
-	getSQL() {
-		return new SQL([this]);
-	}
-};
-Column.prototype.getSQL = function() {
-	return new SQL([this]);
-};
-Table.prototype.getSQL = function() {
-	return new SQL([this]);
-};
-Subquery.prototype.getSQL = function() {
-	return new SQL([this]);
-};
-var ColumnAliasProxyHandler = class {
-	constructor(table) {
-		this.table = table;
-	}
-	static [entityKind] = "ColumnAliasProxyHandler";
-	get(columnObj, prop) {
-		if (prop === "table") return this.table;
-		return columnObj[prop];
-	}
-};
-var TableAliasProxyHandler = class {
-	constructor(alias, replaceOriginalName) {
-		this.alias = alias;
-		this.replaceOriginalName = replaceOriginalName;
-	}
-	static [entityKind] = "TableAliasProxyHandler";
-	get(target, prop) {
-		if (prop === Table.Symbol.IsAlias) return true;
-		if (prop === Table.Symbol.Name) return this.alias;
-		if (this.replaceOriginalName && prop === Table.Symbol.OriginalName) return this.alias;
-		if (prop === ViewBaseConfig) return {
-			...target[ViewBaseConfig],
-			name: this.alias,
-			isAlias: true
-		};
-		if (prop === Table.Symbol.Columns) {
-			const columns = target[Table.Symbol.Columns];
-			if (!columns) return columns;
-			const proxiedColumns = {};
-			Object.keys(columns).map((key) => {
-				proxiedColumns[key] = new Proxy(columns[key], new ColumnAliasProxyHandler(new Proxy(target, this)));
-			});
-			return proxiedColumns;
-		}
-		const value = target[prop];
-		if (is(value, Column)) return new Proxy(value, new ColumnAliasProxyHandler(new Proxy(target, this)));
-		return value;
-	}
-};
-function aliasedTable(table, tableAlias) {
-	return new Proxy(table, new TableAliasProxyHandler(tableAlias, false));
-}
-function aliasedTableColumn(column, tableAlias) {
-	return new Proxy(column, new ColumnAliasProxyHandler(new Proxy(column.table, new TableAliasProxyHandler(tableAlias, false))));
-}
-function mapColumnsInAliasedSQLToAlias(query, alias) {
-	return new SQL.Aliased(mapColumnsInSQLToAlias(query.sql, alias), query.fieldAlias);
-}
-function mapColumnsInSQLToAlias(query, alias) {
-	return sql.join(query.queryChunks.map((c) => {
-		if (is(c, Column)) return aliasedTableColumn(c, alias);
-		if (is(c, SQL)) return mapColumnsInSQLToAlias(c, alias);
-		if (is(c, SQL.Aliased)) return mapColumnsInAliasedSQLToAlias(c, alias);
-		return c;
-	}));
-}
-var DrizzleError = class extends Error {
-	static [entityKind] = "DrizzleError";
-	constructor({ message: message$1, cause }) {
-		super(message$1);
-		this.name = "DrizzleError";
-		this.cause = cause;
-	}
-};
-var DrizzleQueryError = class DrizzleQueryError extends Error {
-	constructor(query, params, cause) {
-		super(`Failed query: ${query}
-params: ${params}`);
-		this.query = query;
-		this.params = params;
-		this.cause = cause;
-		Error.captureStackTrace(this, DrizzleQueryError);
-		if (cause) this.cause = cause;
-	}
-};
-var TransactionRollbackError = class extends DrizzleError {
-	static [entityKind] = "TransactionRollbackError";
-	constructor() {
-		super({ message: "Rollback" });
-	}
-};
-var ConsoleLogWriter = class {
-	static [entityKind] = "ConsoleLogWriter";
-	write(message$1) {
-		console.log(message$1);
-	}
-};
-var DefaultLogger = class {
-	static [entityKind] = "DefaultLogger";
-	writer;
-	constructor(config$2) {
-		this.writer = config$2?.writer ?? new ConsoleLogWriter();
-	}
-	logQuery(query, params) {
-		const stringifiedParams = params.map((p) => {
-			try {
-				return JSON.stringify(p);
-			} catch {
-				return String(p);
-			}
-		});
-		const paramsStr = stringifiedParams.length ? ` -- params: [${stringifiedParams.join(", ")}]` : "";
-		this.writer.write(`Query: ${query}${paramsStr}`);
-	}
-};
-var NoopLogger = class {
-	static [entityKind] = "NoopLogger";
-	logQuery() {}
-};
-var QueryPromise = class {
-	static [entityKind] = "QueryPromise";
-	[Symbol.toStringTag] = "QueryPromise";
-	catch(onRejected) {
-		return this.then(void 0, onRejected);
-	}
-	finally(onFinally) {
-		return this.then((value) => {
-			onFinally?.();
-			return value;
-		}, (reason) => {
-			onFinally?.();
-			throw reason;
-		});
-	}
-	then(onFulfilled, onRejected) {
-		return this.execute().then(onFulfilled, onRejected);
-	}
-};
-function mapResultRow(columns, row, joinsNotNullableMap) {
-	const nullifyMap = {};
-	const result = columns.reduce((result2, { path: path$1, field }, columnIndex) => {
-		let decoder$1;
-		if (is(field, Column)) decoder$1 = field;
-		else if (is(field, SQL)) decoder$1 = field.decoder;
-		else if (is(field, Subquery)) decoder$1 = field._.sql.decoder;
-		else decoder$1 = field.sql.decoder;
-		let node = result2;
-		for (const [pathChunkIndex, pathChunk] of path$1.entries()) if (pathChunkIndex < path$1.length - 1) {
-			if (!(pathChunk in node)) node[pathChunk] = {};
-			node = node[pathChunk];
-		} else {
-			const rawValue = row[columnIndex];
-			const value = node[pathChunk] = rawValue === null ? null : decoder$1.mapFromDriverValue(rawValue);
-			if (joinsNotNullableMap && is(field, Column) && path$1.length === 2) {
-				const objectName = path$1[0];
-				if (!(objectName in nullifyMap)) nullifyMap[objectName] = value === null ? getTableName(field.table) : false;
-				else if (typeof nullifyMap[objectName] === "string" && nullifyMap[objectName] !== getTableName(field.table)) nullifyMap[objectName] = false;
-			}
-		}
-		return result2;
-	}, {});
-	if (joinsNotNullableMap && Object.keys(nullifyMap).length > 0) {
-		for (const [objectName, tableName] of Object.entries(nullifyMap)) if (typeof tableName === "string" && !joinsNotNullableMap[tableName]) result[objectName] = null;
-	}
-	return result;
-}
-function orderSelectedFields(fields, pathPrefix) {
-	return Object.entries(fields).reduce((result, [name, field]) => {
-		if (typeof name !== "string") return result;
-		const newPath = pathPrefix ? [...pathPrefix, name] : [name];
-		if (is(field, Column) || is(field, SQL) || is(field, SQL.Aliased) || is(field, Subquery)) result.push({
-			path: newPath,
-			field
-		});
-		else if (is(field, Table)) result.push(...orderSelectedFields(field[Table.Symbol.Columns], newPath));
-		else result.push(...orderSelectedFields(field, newPath));
-		return result;
-	}, []);
-}
-function haveSameKeys(left, right) {
-	const leftKeys = Object.keys(left);
-	const rightKeys = Object.keys(right);
-	if (leftKeys.length !== rightKeys.length) return false;
-	for (const [index$1, key] of leftKeys.entries()) if (key !== rightKeys[index$1]) return false;
-	return true;
-}
-function mapUpdateSet(table, values) {
-	const entries = Object.entries(values).filter(([, value]) => value !== void 0).map(([key, value]) => {
-		if (is(value, SQL) || is(value, Column)) return [key, value];
-		else return [key, new Param(value, table[Table.Symbol.Columns][key])];
-	});
-	if (entries.length === 0) throw new Error("No values to set");
-	return Object.fromEntries(entries);
-}
-function applyMixins(baseClass, extendedClasses) {
-	for (const extendedClass of extendedClasses) for (const name of Object.getOwnPropertyNames(extendedClass.prototype)) {
-		if (name === "constructor") continue;
-		Object.defineProperty(baseClass.prototype, name, Object.getOwnPropertyDescriptor(extendedClass.prototype, name) || /* @__PURE__ */ Object.create(null));
-	}
-}
-function getTableColumns(table) {
-	return table[Table.Symbol.Columns];
-}
-function getTableLikeName(table) {
-	return is(table, Subquery) ? table._.alias : is(table, View) ? table[ViewBaseConfig].name : is(table, SQL) ? void 0 : table[Table.Symbol.IsAlias] ? table[Table.Symbol.Name] : table[Table.Symbol.BaseName];
-}
-function getColumnNameAndConfig(a, b) {
-	return {
-		name: typeof a === "string" && a.length > 0 ? a : "",
-		config: typeof a === "object" ? a : b
-	};
-}
-function isConfig(data) {
-	if (typeof data !== "object" || data === null) return false;
-	if (data.constructor.name !== "Object") return false;
-	if ("logger" in data) {
-		const type = typeof data["logger"];
-		if (type !== "boolean" && (type !== "object" || typeof data["logger"]["logQuery"] !== "function") && type !== "undefined") return false;
-		return true;
-	}
-	if ("schema" in data) {
-		const type = typeof data["schema"];
-		if (type !== "object" && type !== "undefined") return false;
-		return true;
-	}
-	if ("casing" in data) {
-		const type = typeof data["casing"];
-		if (type !== "string" && type !== "undefined") return false;
-		return true;
-	}
-	if ("mode" in data) {
-		if (data["mode"] !== "default" || data["mode"] !== "planetscale" || data["mode"] !== void 0) return false;
-		return true;
-	}
-	if ("connection" in data) {
-		const type = typeof data["connection"];
-		if (type !== "string" && type !== "object" && type !== "undefined") return false;
-		return true;
-	}
-	if ("client" in data) {
-		const type = typeof data["client"];
-		if (type !== "object" && type !== "function" && type !== "undefined") return false;
-		return true;
-	}
-	if (Object.keys(data).length === 0) return true;
-	return false;
-}
-var textDecoder = typeof TextDecoder === "undefined" ? null : new TextDecoder();
-var InlineForeignKeys$1 = Symbol.for("drizzle:PgInlineForeignKeys");
-var EnableRLS = Symbol.for("drizzle:EnableRLS");
-var PgTable = class extends Table {
-	static [entityKind] = "PgTable";
-	static Symbol = Object.assign({}, Table.Symbol, {
-		InlineForeignKeys: InlineForeignKeys$1,
-		EnableRLS
-	});
-	[InlineForeignKeys$1] = [];
-	[EnableRLS] = false;
-	[Table.Symbol.ExtraConfigBuilder] = void 0;
-	[Table.Symbol.ExtraConfigColumns] = {};
-};
-var PrimaryKeyBuilder = class {
-	static [entityKind] = "PgPrimaryKeyBuilder";
-	columns;
-	name;
-	constructor(columns, name) {
-		this.columns = columns;
-		this.name = name;
-	}
-	build(table) {
-		return new PrimaryKey(table, this.columns, this.name);
-	}
-};
-var PrimaryKey = class {
-	constructor(table, columns, name) {
-		this.table = table;
-		this.columns = columns;
-		this.name = name;
-	}
-	static [entityKind] = "PgPrimaryKey";
-	columns;
-	name;
-	getName() {
-		return this.name ?? `${this.table[PgTable.Symbol.Name]}_${this.columns.map((column) => column.name).join("_")}_pk`;
-	}
-};
-function bindIfParam(value, column) {
-	if (isDriverValueEncoder(column) && !isSQLWrapper(value) && !is(value, Param) && !is(value, Placeholder) && !is(value, Column) && !is(value, Table) && !is(value, View)) return new Param(value, column);
-	return value;
-}
-var eq = (left, right) => {
-	return sql`${left} = ${bindIfParam(right, left)}`;
-};
-var ne = (left, right) => {
-	return sql`${left} <> ${bindIfParam(right, left)}`;
-};
-function and(...unfilteredConditions) {
-	const conditions = unfilteredConditions.filter((c) => c !== void 0);
-	if (conditions.length === 0) return;
-	if (conditions.length === 1) return new SQL(conditions);
-	return new SQL([
-		new StringChunk("("),
-		sql.join(conditions, new StringChunk(" and ")),
-		new StringChunk(")")
-	]);
-}
-function or(...unfilteredConditions) {
-	const conditions = unfilteredConditions.filter((c) => c !== void 0);
-	if (conditions.length === 0) return;
-	if (conditions.length === 1) return new SQL(conditions);
-	return new SQL([
-		new StringChunk("("),
-		sql.join(conditions, new StringChunk(" or ")),
-		new StringChunk(")")
-	]);
-}
-function not(condition) {
-	return sql`not ${condition}`;
-}
-var gt = (left, right) => {
-	return sql`${left} > ${bindIfParam(right, left)}`;
-};
-var gte = (left, right) => {
-	return sql`${left} >= ${bindIfParam(right, left)}`;
-};
-var lt = (left, right) => {
-	return sql`${left} < ${bindIfParam(right, left)}`;
-};
-var lte = (left, right) => {
-	return sql`${left} <= ${bindIfParam(right, left)}`;
-};
-function inArray(column, values) {
-	if (Array.isArray(values)) {
-		if (values.length === 0) return sql`false`;
-		return sql`${column} in ${values.map((v) => bindIfParam(v, column))}`;
-	}
-	return sql`${column} in ${bindIfParam(values, column)}`;
-}
-function notInArray(column, values) {
-	if (Array.isArray(values)) {
-		if (values.length === 0) return sql`true`;
-		return sql`${column} not in ${values.map((v) => bindIfParam(v, column))}`;
-	}
-	return sql`${column} not in ${bindIfParam(values, column)}`;
-}
-function isNull(value) {
-	return sql`${value} is null`;
-}
-function isNotNull(value) {
-	return sql`${value} is not null`;
-}
-function exists(subquery) {
-	return sql`exists ${subquery}`;
-}
-function notExists(subquery) {
-	return sql`not exists ${subquery}`;
-}
-function between(column, min, max) {
-	return sql`${column} between ${bindIfParam(min, column)} and ${bindIfParam(max, column)}`;
-}
-function notBetween(column, min, max) {
-	return sql`${column} not between ${bindIfParam(min, column)} and ${bindIfParam(max, column)}`;
-}
-function like(column, value) {
-	return sql`${column} like ${value}`;
-}
-function notLike(column, value) {
-	return sql`${column} not like ${value}`;
-}
-function ilike(column, value) {
-	return sql`${column} ilike ${value}`;
-}
-function notIlike(column, value) {
-	return sql`${column} not ilike ${value}`;
-}
-function asc(column) {
-	return sql`${column} asc`;
-}
-function desc(column) {
-	return sql`${column} desc`;
-}
-var Relation = class {
-	constructor(sourceTable, referencedTable, relationName) {
-		this.sourceTable = sourceTable;
-		this.referencedTable = referencedTable;
-		this.relationName = relationName;
-		this.referencedTableName = referencedTable[Table.Symbol.Name];
-	}
-	static [entityKind] = "Relation";
-	referencedTableName;
-	fieldName;
-};
-var Relations = class {
-	constructor(table, config$2) {
-		this.table = table;
-		this.config = config$2;
-	}
-	static [entityKind] = "Relations";
-};
-var One = class One extends Relation {
-	constructor(sourceTable, referencedTable, config$2, isNullable) {
-		super(sourceTable, referencedTable, config$2?.relationName);
-		this.config = config$2;
-		this.isNullable = isNullable;
-	}
-	static [entityKind] = "One";
-	withFieldName(fieldName) {
-		const relation = new One(this.sourceTable, this.referencedTable, this.config, this.isNullable);
-		relation.fieldName = fieldName;
-		return relation;
-	}
-};
-var Many = class Many extends Relation {
-	constructor(sourceTable, referencedTable, config$2) {
-		super(sourceTable, referencedTable, config$2?.relationName);
-		this.config = config$2;
-	}
-	static [entityKind] = "Many";
-	withFieldName(fieldName) {
-		const relation = new Many(this.sourceTable, this.referencedTable, this.config);
-		relation.fieldName = fieldName;
-		return relation;
-	}
-};
-function getOperators() {
-	return {
-		and,
-		between,
-		eq,
-		exists,
-		gt,
-		gte,
-		ilike,
-		inArray,
-		isNull,
-		isNotNull,
-		like,
-		lt,
-		lte,
-		ne,
-		not,
-		notBetween,
-		notExists,
-		notLike,
-		notIlike,
-		notInArray,
-		or,
-		sql
-	};
-}
-function getOrderByOperators() {
-	return {
-		sql,
-		asc,
-		desc
-	};
-}
-function extractTablesRelationalConfig(schema$1, configHelpers) {
-	if (Object.keys(schema$1).length === 1 && "default" in schema$1 && !is(schema$1["default"], Table)) schema$1 = schema$1["default"];
-	const tableNamesMap = {};
-	const relationsBuffer = {};
-	const tablesConfig = {};
-	for (const [key, value] of Object.entries(schema$1)) if (is(value, Table)) {
-		const dbName = getTableUniqueName(value);
-		const bufferedRelations = relationsBuffer[dbName];
-		tableNamesMap[dbName] = key;
-		tablesConfig[key] = {
-			tsName: key,
-			dbName: value[Table.Symbol.Name],
-			schema: value[Table.Symbol.Schema],
-			columns: value[Table.Symbol.Columns],
-			relations: bufferedRelations?.relations ?? {},
-			primaryKey: bufferedRelations?.primaryKey ?? []
-		};
-		for (const column of Object.values(value[Table.Symbol.Columns])) if (column.primary) tablesConfig[key].primaryKey.push(column);
-		const extraConfig = value[Table.Symbol.ExtraConfigBuilder]?.(value[Table.Symbol.ExtraConfigColumns]);
-		if (extraConfig) {
-			for (const configEntry of Object.values(extraConfig)) if (is(configEntry, PrimaryKeyBuilder)) tablesConfig[key].primaryKey.push(...configEntry.columns);
-		}
-	} else if (is(value, Relations)) {
-		const dbName = getTableUniqueName(value.table);
-		const tableName = tableNamesMap[dbName];
-		const relations2 = value.config(configHelpers(value.table));
-		let primaryKey;
-		for (const [relationName, relation] of Object.entries(relations2)) if (tableName) {
-			const tableConfig = tablesConfig[tableName];
-			tableConfig.relations[relationName] = relation;
-		} else {
-			if (!(dbName in relationsBuffer)) relationsBuffer[dbName] = {
-				relations: {},
-				primaryKey
-			};
-			relationsBuffer[dbName].relations[relationName] = relation;
-		}
-	}
-	return {
-		tables: tablesConfig,
-		tableNamesMap
-	};
-}
-function createOne(sourceTable) {
-	return function one(table, config$2) {
-		return new One(sourceTable, table, config$2, config$2?.fields.reduce((res, f) => res && f.notNull, true) ?? false);
-	};
-}
-function createMany(sourceTable) {
-	return function many(referencedTable, config$2) {
-		return new Many(sourceTable, referencedTable, config$2);
-	};
-}
-function normalizeRelation(schema$1, tableNamesMap, relation) {
-	if (is(relation, One) && relation.config) return {
-		fields: relation.config.fields,
-		references: relation.config.references
-	};
-	const referencedTableTsName = tableNamesMap[getTableUniqueName(relation.referencedTable)];
-	if (!referencedTableTsName) throw new Error(`Table "${relation.referencedTable[Table.Symbol.Name]}" not found in schema`);
-	const referencedTableConfig = schema$1[referencedTableTsName];
-	if (!referencedTableConfig) throw new Error(`Table "${referencedTableTsName}" not found in schema`);
-	const sourceTable = relation.sourceTable;
-	const sourceTableTsName = tableNamesMap[getTableUniqueName(sourceTable)];
-	if (!sourceTableTsName) throw new Error(`Table "${sourceTable[Table.Symbol.Name]}" not found in schema`);
-	const reverseRelations = [];
-	for (const referencedTableRelation of Object.values(referencedTableConfig.relations)) if (relation.relationName && relation !== referencedTableRelation && referencedTableRelation.relationName === relation.relationName || !relation.relationName && referencedTableRelation.referencedTable === relation.sourceTable) reverseRelations.push(referencedTableRelation);
-	if (reverseRelations.length > 1) throw relation.relationName ? /* @__PURE__ */ new Error(`There are multiple relations with name "${relation.relationName}" in table "${referencedTableTsName}"`) : /* @__PURE__ */ new Error(`There are multiple relations between "${referencedTableTsName}" and "${relation.sourceTable[Table.Symbol.Name]}". Please specify relation name`);
-	if (reverseRelations[0] && is(reverseRelations[0], One) && reverseRelations[0].config) return {
-		fields: reverseRelations[0].config.references,
-		references: reverseRelations[0].config.fields
-	};
-	throw new Error(`There is not enough information to infer relation "${sourceTableTsName}.${relation.fieldName}"`);
-}
-function createTableRelationsHelpers(sourceTable) {
-	return {
-		one: createOne(sourceTable),
-		many: createMany(sourceTable)
-	};
-}
-function mapRelationalRow(tablesConfig, tableConfig, row, buildQueryResultSelection, mapColumnValue = (value) => value) {
-	const result = {};
-	for (const [selectionItemIndex, selectionItem] of buildQueryResultSelection.entries()) if (selectionItem.isJson) {
-		const relation = tableConfig.relations[selectionItem.tsKey];
-		const rawSubRows = row[selectionItemIndex];
-		const subRows = typeof rawSubRows === "string" ? JSON.parse(rawSubRows) : rawSubRows;
-		result[selectionItem.tsKey] = is(relation, One) ? subRows && mapRelationalRow(tablesConfig, tablesConfig[selectionItem.relationTableTsKey], subRows, selectionItem.selection, mapColumnValue) : subRows.map((subRow) => mapRelationalRow(tablesConfig, tablesConfig[selectionItem.relationTableTsKey], subRow, selectionItem.selection, mapColumnValue));
-	} else {
-		const value = mapColumnValue(row[selectionItemIndex]);
-		const field = selectionItem.field;
-		let decoder$1;
-		if (is(field, Column)) decoder$1 = field;
-		else if (is(field, SQL)) decoder$1 = field.decoder;
-		else decoder$1 = field.sql.decoder;
-		result[selectionItem.tsKey] = value === null ? null : decoder$1.mapFromDriverValue(value);
-	}
-	return result;
-}
-function count(expression) {
-	return sql`count(${expression || sql.raw("*")})`.mapWith(Number);
-}
 function insensitiveIlike(column, pattern, provider) {
 	return provider === "pg" ? ilike(column, pattern) : sql`LOWER(${column}) LIKE LOWER(${pattern})`;
 }
@@ -44246,6 +44066,46 @@ function drizzle(...params) {
 	}
 	drizzle2.mock = mock;
 })(drizzle || (drizzle = {}));
+var viteEnv = {
+	"BASE_URL": "/",
+	"DEV": false,
+	"MODE": "production",
+	"PROD": true,
+	"SSR": true
+};
+var DEV_BETTER_AUTH_SECRET = "dev-only-better-auth-secret-change-before-production";
+var FALLBACK_BETTER_AUTH_SECRET = "coding-agent-web-template-fallback-secret-change-in-production";
+function readEnv(...values) {
+	return values.find((value) => value !== void 0 && value.trim() !== "");
+}
+var nodeEnv = process.env.NODE_ENV ?? "development";
+var cliPort = readCliPort(process.argv);
+var betterAuthSecret = readEnv(process.env.BETTER_AUTH_SECRET) ?? (nodeEnv === "production" ? FALLBACK_BETTER_AUTH_SECRET : DEV_BETTER_AUTH_SECRET);
+var allowedOrigins = readEnv(process.env.ALLOWED_ORIGINS) ?? "http://localhost:3100";
+const env = {
+	NODE_ENV: nodeEnv,
+	PORT: Number(cliPort ?? process.env.PORT ?? 9901),
+	SKY_FC_SERVER_PORT: Number(readEnv(process.env.SKY_FC_SERVER_PORT, process.env.PORT) ?? 3e3),
+	ALLOWED_ORIGINS: allowedOrigins.split(",").map((origin) => origin.trim()).filter(Boolean),
+	BETTER_AUTH_URL: readEnv(process.env.BETTER_AUTH_URL) ?? "http://localhost:3100/api/auth",
+	BETTER_AUTH_SECRET: betterAuthSecret,
+	PUBLIC_BACKEND_URL: readEnv(process.env.PUBLIC_BACKEND_URL) ?? "",
+	SKYBASE_DB_ENDPOINT: readEnv(process.env.SKYBASE_DB_ENDPOINT) ?? "",
+	SKYBASE_DB_TOKEN: readEnv(process.env.SKYBASE_DB_AUTH_TOKEN, process.env.SKYBASE_DB_TOKEN) ?? "",
+	SKYBASE_DB_NAMESPACE: readEnv(process.env.SKYBASE_DB_NAMESPACE) ?? "",
+	SKYWORK_GATEWAY_BASE_URL: readEnv(process.env.SKYWORK_GATEWAY_BASE_URL) ?? "https://api-inn.skywork.ai/gateway",
+	SKYWORK_API_TOKEN: readEnv(process.env.SKYWORK_API_TOKEN) ?? "",
+	SKYWORK_AI_BASE_URL: readEnv(process.env.SKYWORK_AI_BASE_URL) ?? "https://api.skywork.ai/skycowork-llm/",
+	GOOGLE_CLIENT_ID: readEnv(process.env.GOOGLE_CLIENT_ID, process.env.VITE_GOOGLE_CLIENT_ID, viteEnv.VITE_GOOGLE_CLIENT_ID) ?? "",
+	GOOGLE_CLIENT_SECRET: readEnv(process.env.GOOGLE_CLIENT_SECRET) ?? ""
+};
+function readCliPort(argv) {
+	for (let index$1 = 0; index$1 < argv.length; index$1 += 1) {
+		const arg = argv[index$1];
+		if ((arg === "-p" || arg === "--port") && argv[index$1 + 1]) return argv[index$1 + 1];
+		if (arg.startsWith("--port=")) return arg.slice(7);
+	}
+}
 var DatabaseError = class extends Error {
 	constructor(code, message$1, status = 500) {
 		super(message$1);
@@ -44562,6 +44422,191 @@ function toAuthSession(session$1) {
 		userId: session$1.session.userId
 	};
 }
+var admin_bootstrap_route_exports = /* @__PURE__ */ __export({
+	adminBootstrapRouter: () => adminBootstrapRouter,
+	isPublic: () => true
+}, 1);
+const adminBootstrapRouter = new Hono();
+adminBootstrapRouter.get("/", async (c) => {
+	const secret = process.env.MIGRATE_ADMIN_SECRET;
+	if (!secret) return c.json({
+		ok: false,
+		error: {
+			code: "NOT_CONFIGURED",
+			message: "MIGRATE_ADMIN_SECRET not set on server"
+		}
+	}, 503);
+	if ((c.req.header("x-migrate-secret") ?? c.req.query("secret")) !== secret) return c.json({
+		ok: false,
+		error: {
+			code: "UNAUTHORIZED",
+			message: "Invalid or missing secret"
+		}
+	}, 401);
+	const email$2 = c.req.query("email");
+	const password = c.req.query("password");
+	const name = c.req.query("name") ?? "Christian Bezandry";
+	if (!email$2 || !password) return c.json({
+		ok: false,
+		error: {
+			code: "BAD_REQUEST",
+			message: "email and password query params are required"
+		}
+	}, 400);
+	const db$1 = getDb();
+	const existing = await db$1.select().from(user).where(eq(user.email, email$2)).limit(1);
+	if (existing.length === 0) await getAuth().api.signUpEmail({ body: {
+		email: email$2,
+		password,
+		name
+	} });
+	await db$1.update(user).set({ role: "admin" }).where(eq(user.email, email$2));
+	const after = await db$1.select().from(user).where(eq(user.email, email$2)).limit(1);
+	return c.json(apiSuccess({
+		created: existing.length === 0,
+		user: after[0] ?? null
+	}));
+});
+const publicRoute = async (_c, next) => {
+	await next();
+};
+const protectedRoute = async (c, next) => {
+	const user$1 = c.var.user;
+	if (!user$1) return c.json(apiFailure("UNAUTHORIZED", "Unauthorized"), 401);
+	c.set("currentUser", user$1);
+	await next();
+};
+const adminRoute = async (c, next) => {
+	const user$1 = c.var.user;
+	if (!user$1) return c.json(apiFailure("UNAUTHORIZED", "Unauthorized"), 401);
+	if (user$1.role !== "admin") return c.json(apiFailure("FORBIDDEN", "Forbidden"), 403);
+	c.set("currentUser", user$1);
+	await next();
+};
+var CHAT_COMPLETIONS_PATH = "/skycowork_llm/v1/proxy/chat/completions";
+var REQUEST_TIMEOUT_MS = 3e4;
+var PlatformAIError = class extends Error {
+	constructor(code, message$1, status) {
+		super(message$1);
+		this.code = code;
+		this.status = status;
+		this.name = "PlatformAIError";
+	}
+};
+function platformAIUrl() {
+	const baseUrl = env.SKYWORK_AI_BASE_URL.trim().replace(/\/+$/, "");
+	if (!baseUrl || !env.SKYWORK_API_TOKEN) throw new PlatformAIError("PLATFORM_AI_NOT_CONFIGURED", "Platform AI is not configured", 500);
+	return `${baseUrl}${CHAT_COMPLETIONS_PATH}`;
+}
+async function readUpstreamErrorMessage(response) {
+	const raw$1 = await response.text().catch(() => "");
+	if (!raw$1.trim()) return "";
+	try {
+		const payload = JSON.parse(raw$1);
+		if (typeof payload.error === "object" && typeof payload.error?.message === "string") return payload.error.message;
+		if (typeof payload.message === "string") return payload.message;
+		if (typeof payload.error === "string") return payload.error;
+	} catch {
+		return raw$1.trim();
+	}
+	return raw$1.trim();
+}
+async function requestPlatformAIResponse(input, stream) {
+	const url$1 = platformAIUrl();
+	let response;
+	try {
+		response = await fetch(url$1, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"X-Skywork-Api-Token": env.SKYWORK_API_TOKEN,
+				"x-skywork-billing-source": "skybot",
+				"X-Skywork-Scene": input.sceneKey
+			},
+			body: JSON.stringify({
+				messages: input.messages,
+				stream,
+				max_tokens: 2048
+			}),
+			signal: stream ? void 0 : AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+		});
+	} catch {
+		throw new PlatformAIError("PLATFORM_AI_REQUEST_FAILED", "AI request failed", 502);
+	}
+	if (!response.ok) {
+		const upstreamMessage = await readUpstreamErrorMessage(response);
+		throw new PlatformAIError("PLATFORM_AI_UPSTREAM_ERROR", `AI upstream error: ${response.status}${upstreamMessage ? `: ${upstreamMessage}` : ""}`, 502);
+	}
+	return response;
+}
+async function requestPlatformAIChat(input) {
+	const response = await requestPlatformAIResponse(input, false);
+	let data;
+	try {
+		data = await response.json();
+	} catch {
+		throw new PlatformAIError("PLATFORM_AI_INVALID_RESPONSE", "AI response was invalid", 502);
+	}
+	const reply = data.choices?.[0]?.message?.content;
+	return { reply: typeof reply === "string" ? reply : "" };
+}
+async function requestPlatformAIChatStream(input) {
+	const response = await requestPlatformAIResponse(input, true);
+	if (!response.body) throw new PlatformAIError("PLATFORM_AI_INVALID_RESPONSE", "AI response was invalid", 502);
+	return response;
+}
+var ai_route_exports = /* @__PURE__ */ __export({ aiRouter: () => aiRouter }, 1);
+var SceneKeySchema = string$2().trim().regex(/^[a-z][a-z0-9_]{0,63}$/).refine((sceneKey) => !sceneKey.endsWith("_") && !sceneKey.includes("__"));
+var MessageContentSchema = union$1([string$2(), array$1(discriminatedUnion("type", [object$1({
+	type: literal("text"),
+	text: string$2()
+}), object$1({
+	type: literal("image_url"),
+	image_url: object$1({ url: string$2().url() })
+})])).min(1).max(20)]);
+var ChatRequestSchema = object$1({
+	scene_key: SceneKeySchema,
+	messages: array$1(object$1({
+		role: _enum([
+			"system",
+			"user",
+			"assistant"
+		]),
+		content: MessageContentSchema
+	})).min(1).max(50),
+	stream: boolean$2().optional().default(false)
+});
+const aiRouter = new Hono();
+var chatHandler = async (c) => {
+	const parsed = ChatRequestSchema.safeParse(await c.req.json().catch(() => null));
+	if (!parsed.success) return c.json(apiFailure("INVALID_INPUT", "Invalid AI chat input"), 400);
+	try {
+		if (parsed.data.stream) {
+			const upstream = await requestPlatformAIChatStream({
+				sceneKey: parsed.data.scene_key,
+				messages: parsed.data.messages
+			});
+			return new Response(upstream.body, {
+				status: 200,
+				headers: {
+					"Content-Type": upstream.headers.get("Content-Type") ?? "text/event-stream; charset=utf-8",
+					"Cache-Control": upstream.headers.get("Cache-Control") ?? "no-cache",
+					"X-Accel-Buffering": "no"
+				}
+			});
+		}
+		const result = await requestPlatformAIChat({
+			sceneKey: parsed.data.scene_key,
+			messages: parsed.data.messages
+		});
+		return c.json(apiSuccess(result), 200);
+	} catch (error$51) {
+		if (error$51 instanceof PlatformAIError) return c.json(apiFailure(error$51.code, error$51.message), error$51.status);
+		throw error$51;
+	}
+};
+aiRouter.post("", protectedRoute, chatHandler);
+aiRouter.post("/", protectedRoute, chatHandler);
 var auth_config_route_exports = /* @__PURE__ */ __export({
 	authConfigRouter: () => authConfigRouter,
 	isPublic: () => true
@@ -45830,6 +45875,7 @@ function routeNameFromPath(filePath) {
 var modules;
 try {
 	modules = {
+		"../routes/admin-bootstrap.route.ts": admin_bootstrap_route_exports,
 		"../routes/ai.route.ts": ai_route_exports,
 		"../routes/auth-config.route.ts": auth_config_route_exports,
 		"../routes/control.route.ts": control_route_exports,
