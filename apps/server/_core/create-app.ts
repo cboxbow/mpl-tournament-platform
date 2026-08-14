@@ -7,20 +7,37 @@ import { onError } from "../middlewares/on-error";
 import { getAuth } from "./auth";
 import { isDatabaseConfigured } from "./db";
 import { apiFailure } from "@repo/shared/http";
+import { env } from "./env";
 
 const app = new Hono({ strict: false });
 
 // The client site and this backend are deployed on different registrable
-// domains by design (skywork.website vs the FC subdomain), so cross-origin is
-// the normal case, not the exception. Auth rides the Authorization header
-// (bearer token, no cookies), which the browser never attaches automatically
-// — an origin allow-list adds no CSRF protection here and only breaks the
-// client when the deploy-time ALLOWED_ORIGINS injection is missing or stale.
-// Reflect the caller's origin instead of restricting it.
+// domains by design, and auth rides the Authorization header (bearer token,
+// no cookies), so an origin allow-list adds no CSRF protection on its own.
+// Even so, unrestricted reflection lets ANY site read API responses (team
+// rosters, player data, admin-guarded error bodies) via a logged-in admin's
+// browser, which is unnecessary once real production domains are known.
+// Restrict to the configured ALLOWED_ORIGINS plus any *.vercel.app preview
+// deployment of this project; fall back to full reflection only when
+// ALLOWED_ORIGINS is unset (local dev / a fresh template instance that
+// hasn't had its production domain injected yet).
+function isAllowedOrigin(origin: string): boolean {
+  if (env.ALLOWED_ORIGINS.includes(origin)) return true;
+  try {
+    return new URL(origin).hostname.endsWith(".vercel.app");
+  } catch {
+    return false;
+  }
+}
+
 app.use(
   "/api/*",
   cors({
-    origin: (origin) => origin || "*",
+    origin: (origin) => {
+      if (!origin) return "*";
+      if (env.ALLOWED_ORIGINS.length === 0) return origin;
+      return isAllowedOrigin(origin) ? origin : undefined;
+    },
     exposeHeaders: ["set-auth-token"],
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true

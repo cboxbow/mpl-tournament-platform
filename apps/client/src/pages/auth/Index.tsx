@@ -265,6 +265,11 @@ const AuthPage = () => {
               {submitting ? "Please wait…" : mode === "signup" ? "Sign up" : "Sign in"}
             </Button>
           </form>
+          {mode === "signin" && (
+            <p className="mt-4 text-center text-xs text-muted-foreground">
+              Forgot your password? Ask an MPL admin to reset it for you — there is no automated email reset yet.
+            </p>
+          )}
         </CardContent>
       </Card>
     </div>

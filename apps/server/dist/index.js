@@ -46317,6 +46317,82 @@ tournamentsRouter.post("/", adminRoute, async (c) => {
 		return c.json(apiFailure("TOURNAMENT_CREATE_FAILED", "Could not create tournament"), 409);
 	}
 });
+async function listUsers() {
+	return getDb().select({
+		id: user.id,
+		name: user.name,
+		email: user.email,
+		role: user.role,
+		emailVerified: user.emailVerified,
+		createdAt: user.createdAt
+	}).from(user).orderBy(user.createdAt);
+}
+async function setUserRole(userId, role, actorUserId) {
+	if (userId === actorUserId && role === "user") throw new DatabaseError("DATABASE_QUERY_FAILED", "You can't remove your own admin access — have another admin do it.", 400);
+	const rows = await getDb().update(user).set({ role }).where(eq(user.id, userId)).returning();
+	if (!rows.length) throw new DatabaseError("DATABASE_QUERY_FAILED", "User not found", 404);
+	return rows[0];
+}
+async function adminSetUserPassword(userId, newPassword) {
+	const db$1 = getDb();
+	const accountRow = await db$1.select().from(account).where(and(eq(account.userId, userId), eq(account.providerId, "credential"))).limit(1);
+	if (!accountRow.length) throw new DatabaseError("DATABASE_QUERY_FAILED", "This user has no email/password login to reset (they may only use Google sign-in)", 400);
+	const hash$1 = await hashPassword$1(newPassword);
+	await db$1.update(account).set({ password: hash$1 }).where(eq(account.id, accountRow[0].id));
+	await db$1.delete(session).where(eq(session.userId, userId));
+}
+var users_route_exports = /* @__PURE__ */ __export({ usersRouter: () => usersRouter }, 1);
+const usersRouter = new Hono();
+usersRouter.get("/", adminRoute, async (c) => {
+	return c.json(apiSuccess({ users: await listUsers() }), 200);
+});
+var CreateUserSchema = object$1({
+	email: string$2().trim().email(),
+	password: string$2().min(8),
+	name: string$2().trim().min(1),
+	role: _enum(["user", "admin"]).default("user")
+});
+usersRouter.post("/", adminRoute, async (c) => {
+	const parsed = CreateUserSchema.safeParse(await c.req.json().catch(() => null));
+	if (!parsed.success) return c.json(apiFailure("INVALID_INPUT", "email, password (min 8 chars) and name are required"), 400);
+	try {
+		await getAuth().api.signUpEmail({ body: {
+			email: parsed.data.email,
+			password: parsed.data.password,
+			name: parsed.data.name
+		} });
+		const created = await setUserRole((await listUsers()).find((u) => u.email === parsed.data.email)?.id ?? "", parsed.data.role, c.var.currentUser.id);
+		return c.json(apiSuccess({ user: created }), 201);
+	} catch (error$51) {
+		if (error$51 instanceof DatabaseError) return c.json(apiFailure(error$51.code, error$51.message), error$51.status === 404 ? 404 : error$51.status === 400 ? 400 : 500);
+		const message$1 = error$51 instanceof Error ? error$51.message : "Could not create user";
+		return c.json(apiFailure("USER_CREATE_FAILED", message$1), 409);
+	}
+});
+var RoleSchema = object$1({ role: _enum(["user", "admin"]) });
+usersRouter.patch("/:userId/role", adminRoute, async (c) => {
+	const parsed = RoleSchema.safeParse(await c.req.json().catch(() => null));
+	if (!parsed.success) return c.json(apiFailure("INVALID_INPUT", "role must be 'user' or 'admin'"), 400);
+	try {
+		const updated = await setUserRole(c.req.param("userId"), parsed.data.role, c.var.currentUser.id);
+		return c.json(apiSuccess({ user: updated }), 200);
+	} catch (error$51) {
+		if (error$51 instanceof DatabaseError) return c.json(apiFailure(error$51.code, error$51.message), error$51.status === 404 ? 404 : error$51.status === 400 ? 400 : 500);
+		return c.json(apiFailure("ROLE_UPDATE_FAILED", "Could not update role"), 500);
+	}
+});
+var PasswordSchema = object$1({ password: string$2().min(8) });
+usersRouter.patch("/:userId/password", adminRoute, async (c) => {
+	const parsed = PasswordSchema.safeParse(await c.req.json().catch(() => null));
+	if (!parsed.success) return c.json(apiFailure("INVALID_INPUT", "password must be at least 8 characters"), 400);
+	try {
+		await adminSetUserPassword(c.req.param("userId"), parsed.data.password);
+		return c.json(apiSuccess({ reset: true }), 200);
+	} catch (error$51) {
+		if (error$51 instanceof DatabaseError) return c.json(apiFailure(error$51.code, error$51.message), error$51.status === 404 ? 404 : error$51.status === 400 ? 400 : 500);
+		return c.json(apiFailure("PASSWORD_RESET_FAILED", "Could not reset password"), 500);
+	}
+});
 var ALWAYS_PUBLIC_PREFIXES = ["/api/auth"];
 function isHono(value) {
 	return typeof value === "object" && value !== null && typeof value.fetch === "function" && typeof value.route === "function" && typeof value.use === "function";
@@ -46345,7 +46421,8 @@ try {
 		"../routes/third-party-google-auth.route.ts": third_party_google_auth_route_exports,
 		"../routes/todos.route.ts": todos_route_exports,
 		"../routes/tournament-data.route.ts": tournament_data_route_exports,
-		"../routes/tournaments.route.ts": tournaments_route_exports
+		"../routes/tournaments.route.ts": tournaments_route_exports,
+		"../routes/users.route.ts": users_route_exports
 	};
 } catch {
 	const routesDir = resolve(dirname(fileURLToPath(import.meta.url)), "../routes");
@@ -46419,8 +46496,20 @@ const onError = (err, c) => {
 	return c.json(apiFailure("INTERNAL_SERVER_ERROR", message$1), 500);
 };
 var app = new Hono({ strict: false });
+function isAllowedOrigin(origin) {
+	if (env.ALLOWED_ORIGINS.includes(origin)) return true;
+	try {
+		return new URL(origin).hostname.endsWith(".vercel.app");
+	} catch {
+		return false;
+	}
+}
 app.use("/api/*", cors({
-	origin: (origin) => origin || "*",
+	origin: (origin) => {
+		if (!origin) return "*";
+		if (env.ALLOWED_ORIGINS.length === 0) return origin;
+		return isAllowedOrigin(origin) ? origin : void 0;
+	},
 	exposeHeaders: ["set-auth-token"],
 	allowMethods: [
 		"GET",
