@@ -10,6 +10,7 @@ import TournamentHome from "./pages/tournaments/Home";
 import AdminTournaments from "./pages/admin/tournaments/Index";
 import TournamentSection from "./pages/tournaments/Section";
 import TournamentControl from "./pages/admin/tournaments/Control";
+import TournamentSetup from "./pages/admin/tournaments/Setup";
 
 const queryClient = new QueryClient();
 
@@ -25,6 +26,7 @@ const App = () => (
           <Route path="/tournaments/:slug" element={<TournamentHome />} />
           <Route path="/tournaments/:slug/:section" element={<TournamentSection />} />
           <Route path="/admin/tournaments" element={<AdminTournaments />} />
+          <Route path="/admin/tournaments/:slug/setup" element={<TournamentSetup />} />
           <Route path="/admin/tournaments/:slug/control" element={<TournamentControl />} />
           <Route path="*" element={<NotFound />} />
         </Routes>

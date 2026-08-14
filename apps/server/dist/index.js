@@ -1486,7 +1486,7 @@ var util_exports = /* @__PURE__ */ __export({
 	required: () => required,
 	safeExtend: () => safeExtend,
 	shallowClone: () => shallowClone,
-	slugify: () => slugify,
+	slugify: () => slugify$1,
 	stringifyPrimitive: () => stringifyPrimitive,
 	uint8ArrayToBase64: () => uint8ArrayToBase64,
 	uint8ArrayToBase64url: () => uint8ArrayToBase64url,
@@ -1602,7 +1602,7 @@ function randomString(length = 10) {
 function esc(str) {
 	return JSON.stringify(str);
 }
-function slugify(input) {
+function slugify$1(input) {
 	return input.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
 }
 const captureStackTrace = "captureStackTrace" in Error ? Error.captureStackTrace : (..._args) => {};
@@ -11032,7 +11032,7 @@ function _toUpperCase() {
 }
 /* @__NO_SIDE_EFFECTS__ */
 function _slugify() {
-	return /* @__PURE__ */ _overwrite((input) => slugify(input));
+	return /* @__PURE__ */ _overwrite((input) => slugify$1(input));
 }
 /* @__NO_SIDE_EFFECTS__ */
 function _array(Class$1, element, params) {
@@ -44647,6 +44647,93 @@ async function tournamentCounts(tournamentId$1) {
 		courts: Number(row?.courts ?? 0)
 	};
 }
+async function listCategories(tournamentId$1) {
+	return getDb().select().from(tournamentCategories).where(eq(tournamentCategories.tournamentId, tournamentId$1)).orderBy(asc(tournamentCategories.name));
+}
+async function getCategory(categoryId) {
+	const row = (await getDb().select().from(tournamentCategories).where(eq(tournamentCategories.id, categoryId)).limit(1))[0];
+	if (!row) throw new DatabaseError("DATABASE_QUERY_FAILED", "Category not found", 404);
+	return row;
+}
+async function createCategory(input) {
+	const id = crypto.randomUUID();
+	return (await getDb().insert(tournamentCategories).values({
+		id,
+		tournamentId: input.tournamentId,
+		code: input.code,
+		name: input.name,
+		gender: input.gender ?? null
+	}).returning())[0];
+}
+async function updateCategory(categoryId, input) {
+	const row = (await getDb().update(tournamentCategories).set(input).where(eq(tournamentCategories.id, categoryId)).returning())[0];
+	if (!row) throw new DatabaseError("DATABASE_QUERY_FAILED", "Category not found", 404);
+	return row;
+}
+async function deleteCategory(categoryId) {
+	await getDb().delete(tournamentCategories).where(eq(tournamentCategories.id, categoryId));
+}
+var categories_route_exports = /* @__PURE__ */ __export({ categoriesRouter: () => categoriesRouter }, 1);
+const categoriesRouter = new Hono();
+var CreateSchema = object$1({
+	tournamentSlug: string$2().min(1),
+	code: string$2().trim().min(1),
+	name: string$2().trim().min(1),
+	gender: _enum([
+		"MEN",
+		"WOMEN",
+		"MIXED"
+	]).optional()
+});
+var UpdateSchema = object$1({
+	code: string$2().trim().min(1).optional(),
+	name: string$2().trim().min(1).optional(),
+	gender: _enum([
+		"MEN",
+		"WOMEN",
+		"MIXED"
+	]).optional()
+});
+categoriesRouter.get("/", publicRoute, async (c) => {
+	const slug = c.req.query("tournamentSlug");
+	if (!slug) return c.json(apiFailure("MISSING_TOURNAMENT", "tournamentSlug query param is required"), 400);
+	try {
+		const tournament = await getTournamentBySlug(slug);
+		return c.json(apiSuccess({ categories: await listCategories(tournament.id) }), 200);
+	} catch (error$51) {
+		return c.json(apiFailure("TOURNAMENT_NOT_FOUND", error$51 instanceof Error ? error$51.message : "Not found"), 404);
+	}
+});
+categoriesRouter.post("/", adminRoute, async (c) => {
+	const parsed = CreateSchema.safeParse(await c.req.json().catch(() => null));
+	if (!parsed.success) return c.json(apiFailure("INVALID_INPUT", "Invalid category payload"), 400);
+	try {
+		const category = await createCategory({
+			tournamentId: (await getTournamentBySlug(parsed.data.tournamentSlug)).id,
+			code: parsed.data.code,
+			name: parsed.data.name,
+			gender: parsed.data.gender
+		});
+		return c.json(apiSuccess({ category }), 201);
+	} catch (error$51) {
+		return c.json(apiFailure("CATEGORY_CREATE_FAILED", error$51 instanceof Error ? error$51.message : "Could not create category"), 409);
+	}
+});
+categoriesRouter.patch("/:categoryId", adminRoute, async (c) => {
+	const parsed = UpdateSchema.safeParse(await c.req.json().catch(() => null));
+	if (!parsed.success) return c.json(apiFailure("INVALID_INPUT", "Invalid category payload"), 400);
+	try {
+		const category = await updateCategory(c.req.param("categoryId"), parsed.data);
+		return c.json(apiSuccess({ category }), 200);
+	} catch (error$51) {
+		if (error$51 instanceof DatabaseError) return c.json(apiFailure(error$51.code, error$51.message), error$51.status === 404 ? 404 : 500);
+		return c.json(apiFailure("CATEGORY_UPDATE_FAILED", "Could not update category"), 500);
+	}
+});
+categoriesRouter.delete("/:categoryId", adminRoute, async (c) => {
+	await deleteCategory(c.req.param("categoryId"));
+	return c.json(apiSuccess({ deleted: true }), 200);
+});
 const DEFAULT_FORMAT_SETTINGS = {
 	setsToWin: 2,
 	gamesToWinSet: 6,
@@ -44725,6 +44812,23 @@ function resolveMatchWinner(input) {
 		loserTeamId,
 		setsWonA: result.setsWonA,
 		setsWonB: result.setsWonB
+	};
+}
+function normalizePlayerName(value) {
+	return value.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+function calculateTeamWeight(rankA, rankB, override) {
+	if (override != null) return {
+		weight: override,
+		mode: "OVERRIDE"
+	};
+	if (rankA == null || rankB == null) return {
+		weight: null,
+		mode: "REVIEW_REQUIRED"
+	};
+	return {
+		weight: rankA + rankB,
+		mode: "AUTOMATIC"
 	};
 }
 async function tournamentId(slug) {
@@ -45121,6 +45225,286 @@ controlRouter.post("/:slug/matches/:matchId/score", adminRoute, async (c) => {
 		return c.json(apiFailure("SCORE_SAVE_FAILED", error$51 instanceof Error ? error$51.message : "Unable to save score"), 500);
 	}
 });
+var KNOCKOUT_ROUND_NAMES = {
+	2: "F",
+	4: "SF",
+	8: "QF",
+	16: "R16",
+	32: "R32",
+	64: "R64",
+	128: "R128"
+};
+function seedSlotOrder(bracketSize) {
+	let order = [1];
+	let size = 1;
+	while (size < bracketSize) {
+		size *= 2;
+		const next = [];
+		for (const seed of order) next.push(seed, size + 1 - seed);
+		order = next;
+	}
+	return order;
+}
+function nextPowerOfTwo(n) {
+	let size = 1;
+	while (size < n) size *= 2;
+	return size;
+}
+function sortBySeed(teams$1) {
+	return [...teams$1].sort((a, b) => {
+		return (a.teamWeight ?? Number.MAX_SAFE_INTEGER) - (b.teamWeight ?? Number.MAX_SAFE_INTEGER);
+	});
+}
+async function generateKnockoutBracket(options) {
+	const { tournamentId: tournamentId$1, categoryId } = options;
+	const seeded = sortBySeed(options.teams);
+	if (seeded.length < 2) throw new DatabaseError("DATABASE_QUERY_FAILED", "Need at least 2 teams to generate a knockout draw", 400);
+	const bracketSize = nextPowerOfTwo(seeded.length);
+	const slots = seedSlotOrder(bracketSize).map((seed) => seeded[seed - 1] ?? null);
+	const db$1 = getDb();
+	const stage = options.stage ?? "MAIN_DRAW";
+	const rounds = [];
+	let roundSize = bracketSize;
+	let currentMatchIds = [];
+	const byeWinners = /* @__PURE__ */ new Map();
+	for (let i = 0; i < bracketSize / 2; i++) {
+		const teamA = slots[i * 2];
+		const teamB = slots[i * 2 + 1];
+		const id = crypto.randomUUID();
+		const isBye = !teamA || !teamB;
+		const winner = teamA ?? teamB ?? null;
+		await db$1.insert(matches).values({
+			id,
+			tournamentId: tournamentId$1,
+			categoryId,
+			stage,
+			code: null,
+			round: KNOCKOUT_ROUND_NAMES[roundSize] ?? `R${roundSize}`,
+			teamAId: teamA?.id ?? null,
+			teamBId: teamB?.id ?? null,
+			status: isBye ? "COMPLETED" : "SCHEDULED",
+			winnerTeamId: isBye ? winner?.id ?? null : null,
+			loserTeamId: null,
+			scoreStatus: isBye ? JSON.stringify({ bye: true }) : null,
+			scheduleType: "FOLLOW"
+		});
+		currentMatchIds.push(id);
+		if (isBye && winner) byeWinners.set(i, winner);
+	}
+	rounds.push({
+		round: KNOCKOUT_ROUND_NAMES[roundSize] ?? `R${roundSize}`,
+		matchIds: currentMatchIds
+	});
+	while (roundSize > 2) {
+		const nextRoundSize = roundSize / 2;
+		const nextMatchIds = [];
+		for (let i = 0; i < currentMatchIds.length / 2; i++) {
+			const nextId = crypto.randomUUID();
+			await db$1.insert(matches).values({
+				id: nextId,
+				tournamentId: tournamentId$1,
+				categoryId,
+				stage,
+				code: null,
+				round: KNOCKOUT_ROUND_NAMES[nextRoundSize] ?? `R${nextRoundSize}`,
+				status: "SCHEDULED",
+				scheduleType: "FOLLOW"
+			});
+			nextMatchIds.push(nextId);
+			const sourceAId = currentMatchIds[i * 2];
+			const sourceBId = currentMatchIds[i * 2 + 1];
+			await db$1.insert(matchDependencies).values([{
+				id: crypto.randomUUID(),
+				sourceMatchId: sourceAId,
+				outcome: "WINNER",
+				targetMatchId: nextId,
+				targetSlot: "A"
+			}, {
+				id: crypto.randomUUID(),
+				sourceMatchId: sourceBId,
+				outcome: "WINNER",
+				targetMatchId: nextId,
+				targetSlot: "B"
+			}]);
+			const byeA = byeWinners.get(i * 2);
+			const byeB = byeWinners.get(i * 2 + 1);
+			if (byeA) await db$1.update(matches).set({ teamAId: byeA.id }).where(eq(matches.id, nextId));
+			if (byeB) await db$1.update(matches).set({ teamBId: byeB.id }).where(eq(matches.id, nextId));
+		}
+		rounds.push({
+			round: KNOCKOUT_ROUND_NAMES[nextRoundSize] ?? `R${nextRoundSize}`,
+			matchIds: nextMatchIds
+		});
+		currentMatchIds = nextMatchIds;
+		roundSize = nextRoundSize;
+	}
+	return {
+		bracketSize,
+		byes: bracketSize - seeded.length,
+		rounds
+	};
+}
+async function generateGroupStage(options) {
+	const { tournamentId: tournamentId$1, categoryId, groupSize, advancePerGroup } = options;
+	const seeded = sortBySeed(options.teams);
+	if (seeded.length < groupSize) throw new DatabaseError("DATABASE_QUERY_FAILED", `Need at least ${groupSize} teams for a group of that size`, 400);
+	const groupCount = Math.ceil(seeded.length / groupSize);
+	const db$1 = getDb();
+	const buckets = Array.from({ length: groupCount }, () => []);
+	let g = 0;
+	let direction = 1;
+	for (const team of seeded) {
+		buckets[g].push(team);
+		if (g + direction >= groupCount || g + direction < 0) direction *= -1;
+		else g += direction;
+	}
+	const createdGroups = [];
+	const groupSeedOrder = /* @__PURE__ */ new Map();
+	for (let gi = 0; gi < buckets.length; gi++) {
+		const bucketTeams = buckets[gi];
+		const groupName = String.fromCharCode(65 + gi);
+		const groupId = crypto.randomUUID();
+		await db$1.insert(groups).values({
+			id: groupId,
+			tournamentId: tournamentId$1,
+			categoryId,
+			name: `Group ${groupName}`,
+			sortOrder: gi
+		});
+		for (const [index$1, team] of bucketTeams.entries()) await db$1.insert(groupTeams).values({
+			groupId,
+			teamId: team.id,
+			seedPosition: index$1 + 1
+		});
+		groupSeedOrder.set(groupId, bucketTeams.map((t) => t.id));
+		for (let i = 0; i < bucketTeams.length; i++) for (let j = i + 1; j < bucketTeams.length; j++) await db$1.insert(matches).values({
+			id: crypto.randomUUID(),
+			tournamentId: tournamentId$1,
+			categoryId,
+			groupId,
+			stage: "GROUP",
+			round: "GROUP",
+			teamAId: bucketTeams[i].id,
+			teamBId: bucketTeams[j].id,
+			status: "SCHEDULED",
+			scheduleType: "FOLLOW"
+		});
+		createdGroups.push({
+			groupId,
+			name: `Group ${groupName}`,
+			teamIds: bucketTeams.map((t) => t.id)
+		});
+	}
+	if (advancePerGroup <= 0) return {
+		groupCount,
+		groups: createdGroups,
+		bracket: null
+	};
+	const bracketSeeds = [];
+	for (let rank = 0; rank < advancePerGroup; rank++) {
+		const thisRank = createdGroups.map((grp, gi) => ({
+			groupId: grp.groupId,
+			gi
+		}));
+		const ordered = rank % 2 === 0 ? thisRank : [...thisRank].reverse();
+		for (const entry of ordered) bracketSeeds.push({
+			groupId: entry.groupId,
+			position: rank + 1
+		});
+	}
+	const bracket = await generateKnockoutBracket({
+		tournamentId: tournamentId$1,
+		categoryId,
+		teams: bracketSeeds.map((_, index$1) => ({
+			id: `qualifier-${index$1}`,
+			name: "TBD",
+			teamWeight: index$1
+		})),
+		stage: "MAIN_DRAW"
+	});
+	const round1 = bracket.rounds[0];
+	for (let i = 0; i < round1.matchIds.length; i++) {
+		const matchId = round1.matchIds[i];
+		const seedA = bracketSeeds[i * 2];
+		const seedB = bracketSeeds[i * 2 + 1];
+		if (seedA) await db$1.insert(groupQualificationRules).values({
+			id: crypto.randomUUID(),
+			groupId: seedA.groupId,
+			position: seedA.position,
+			targetMatchId: matchId,
+			targetSlot: "A"
+		});
+		if (seedB) await db$1.insert(groupQualificationRules).values({
+			id: crypto.randomUUID(),
+			groupId: seedB.groupId,
+			position: seedB.position,
+			targetMatchId: matchId,
+			targetSlot: "B"
+		});
+		await db$1.update(matches).set({
+			teamAId: null,
+			teamBId: null,
+			status: "SCHEDULED",
+			winnerTeamId: null,
+			scoreStatus: null
+		}).where(eq(matches.id, matchId));
+	}
+	return {
+		groupCount,
+		groups: createdGroups,
+		bracket
+	};
+}
+var draws_route_exports = /* @__PURE__ */ __export({ drawsRouter: () => drawsRouter }, 1);
+const drawsRouter = new Hono();
+var GenerateSchema = object$1({
+	format: _enum([
+		"KNOCKOUT",
+		"GROUPS",
+		"GROUPS_PLUS_KNOCKOUT"
+	]),
+	groupSize: number$2().int().min(3).max(8).optional(),
+	advancePerGroup: number$2().int().min(1).max(4).optional()
+});
+drawsRouter.post("/:categoryId/generate", adminRoute, async (c) => {
+	const parsed = GenerateSchema.safeParse(await c.req.json().catch(() => null));
+	if (!parsed.success) return c.json(apiFailure("INVALID_INPUT", "Invalid draw generation payload"), 400);
+	const categoryId = c.req.param("categoryId");
+	try {
+		const category = await getCategory(categoryId);
+		const existing = await executeSql("SELECT COUNT(*) AS c FROM matches WHERE categoryId=?", [categoryId]);
+		if (Number(existing.rows[0]?.c ?? 0) > 0) return c.json(apiFailure("DRAW_ALREADY_EXISTS", "This category already has a generated draw — delete its matches first if you need to regenerate."), 409);
+		const teams$1 = (await executeSql("SELECT id, name, teamWeight FROM teams WHERE categoryId=?", [categoryId])).rows;
+		if (teams$1.length < 2) return c.json(apiFailure("NOT_ENOUGH_TEAMS", "Register at least 2 teams before generating a draw"), 400);
+		if (parsed.data.format === "KNOCKOUT") {
+			const result$1 = await generateKnockoutBracket({
+				tournamentId: category.tournamentId,
+				categoryId,
+				teams: teams$1
+			});
+			return c.json(apiSuccess({
+				format: "KNOCKOUT",
+				...result$1
+			}), 201);
+		}
+		const groupSize = parsed.data.groupSize ?? 4;
+		const advancePerGroup = parsed.data.format === "GROUPS_PLUS_KNOCKOUT" ? parsed.data.advancePerGroup ?? 2 : 0;
+		const result = await generateGroupStage({
+			tournamentId: category.tournamentId,
+			categoryId,
+			teams: teams$1,
+			groupSize,
+			advancePerGroup
+		});
+		return c.json(apiSuccess({
+			format: parsed.data.format,
+			...result
+		}), 201);
+	} catch (error$51) {
+		if (error$51 instanceof DatabaseError) return c.json(apiFailure(error$51.code, error$51.message), error$51.status === 404 ? 404 : error$51.status === 400 ? 400 : error$51.status === 409 ? 409 : 500);
+		return c.json(apiFailure("DRAW_GENERATE_FAILED", error$51 instanceof Error ? error$51.message : "Could not generate draw"), 500);
+	}
+});
 var MessageServiceError = class extends Error {
 	constructor(message$1, status, code) {
 		super(message$1);
@@ -45287,6 +45671,124 @@ emailVerificationRouter.post("/verify-code", protectedRoute, async (c) => {
 	}).where(eq(user.id, user$1.id));
 	await getDb().delete(verification).where(eq(verification.identifier, identifier));
 	return c.json(apiSuccess({ verified: true }), 200);
+});
+function slugify(value) {
+	return normalizePlayerName(value).replace(/\s+/g, "-");
+}
+async function searchPlayers(query) {
+	if (!query.trim()) return [];
+	return getDb().select().from(players).where(like(players.displayName, `%${query.trim()}%`)).limit(20);
+}
+async function createPlayer(input) {
+	const displayName = `${input.firstName} ${input.lastName}`.trim().toUpperCase();
+	const slug = slugify(displayName) || crypto.randomUUID();
+	const id = crypto.randomUUID();
+	return (await getDb().insert(players).values({
+		id,
+		mplPlayerId: `MPL-${slug}`,
+		firstName: input.firstName.trim().toUpperCase(),
+		lastName: input.lastName.trim().toUpperCase(),
+		displayName,
+		slug,
+		gender: input.gender ?? null,
+		currentRanking: input.currentRanking ?? null
+	}).returning())[0];
+}
+async function listTeamsForCategory(categoryId) {
+	return (await executeSql(`SELECT t.*, (SELECT group_concat(p.displayName, ' / ') FROM team_members tm JOIN players p ON p.id=tm.playerId WHERE tm.teamId=t.id ORDER BY tm.slot) AS players
+     FROM teams t WHERE t.categoryId=? ORDER BY t.teamWeight IS NULL, t.teamWeight`, [categoryId])).rows;
+}
+async function registerTeam(input) {
+	if (input.playerIds.length !== 2) throw new DatabaseError("DATABASE_QUERY_FAILED", "A padel team needs exactly 2 players", 400);
+	const db$1 = getDb();
+	const playerRows = await db$1.select().from(players).where(sql`${players.id} IN ${input.playerIds}`);
+	if (playerRows.length !== input.playerIds.length) throw new DatabaseError("DATABASE_QUERY_FAILED", "One or more players not found", 404);
+	const name = input.name?.trim() || playerRows.map((p) => p.displayName).join(" / ");
+	const { weight, mode } = calculateTeamWeight(playerRows[0]?.currentRanking, playerRows[1]?.currentRanking, input.weightOverride ?? null);
+	const teamId = crypto.randomUUID();
+	const team = (await db$1.insert(teams).values({
+		id: teamId,
+		tournamentId: input.tournamentId,
+		categoryId: input.categoryId,
+		name,
+		teamWeight: weight,
+		weightMode: mode,
+		weightOverride: input.weightOverride ?? null,
+		status: "CONFIRMED"
+	}).returning())[0];
+	for (const [index$1, player] of playerRows.entries()) {
+		await db$1.insert(teamMembers).values({
+			id: crypto.randomUUID(),
+			teamId,
+			playerId: player.id,
+			slot: index$1 + 1,
+			tournamentRanking: player.currentRanking
+		});
+		if (!(await db$1.select().from(tournamentPlayers).where(and(eq(tournamentPlayers.tournamentId, input.tournamentId), eq(tournamentPlayers.playerId, player.id), eq(tournamentPlayers.categoryId, input.categoryId))).limit(1)).length) await db$1.insert(tournamentPlayers).values({
+			id: crypto.randomUUID(),
+			tournamentId: input.tournamentId,
+			playerId: player.id,
+			categoryId: input.categoryId,
+			officialRanking: player.currentRanking,
+			tournamentRanking: player.currentRanking,
+			eligibilityStatus: "CONFIRMED"
+		});
+	}
+	return team;
+}
+async function deleteTeam(teamId) {
+	await getDb().delete(teams).where(eq(teams.id, teamId));
+}
+var entries_route_exports = /* @__PURE__ */ __export({ entriesRouter: () => entriesRouter }, 1);
+const entriesRouter = new Hono();
+entriesRouter.get("/players/search", adminRoute, async (c) => {
+	const q = c.req.query("q") ?? "";
+	return c.json(apiSuccess({ players: await searchPlayers(q) }), 200);
+});
+var CreatePlayerSchema = object$1({
+	firstName: string$2().trim().min(1),
+	lastName: string$2().trim().min(1),
+	gender: _enum(["MEN", "WOMEN"]).optional(),
+	currentRanking: number$2().int().positive().optional()
+});
+entriesRouter.post("/players", adminRoute, async (c) => {
+	const parsed = CreatePlayerSchema.safeParse(await c.req.json().catch(() => null));
+	if (!parsed.success) return c.json(apiFailure("INVALID_INPUT", "Invalid player payload"), 400);
+	const player = await createPlayer(parsed.data);
+	return c.json(apiSuccess({ player }), 201);
+});
+entriesRouter.get("/teams", adminRoute, async (c) => {
+	const categoryId = c.req.query("categoryId");
+	if (!categoryId) return c.json(apiFailure("MISSING_CATEGORY", "categoryId query param is required"), 400);
+	return c.json(apiSuccess({ teams: await listTeamsForCategory(categoryId) }), 200);
+});
+var RegisterTeamSchema = object$1({
+	tournamentSlug: string$2().min(1),
+	categoryId: string$2().min(1),
+	playerIds: array$1(string$2().min(1)).length(2),
+	name: string$2().trim().optional(),
+	weightOverride: number$2().int().positive().optional()
+});
+entriesRouter.post("/teams", adminRoute, async (c) => {
+	const parsed = RegisterTeamSchema.safeParse(await c.req.json().catch(() => null));
+	if (!parsed.success) return c.json(apiFailure("INVALID_INPUT", "Invalid team payload"), 400);
+	try {
+		const team = await registerTeam({
+			tournamentId: (await getTournamentBySlug(parsed.data.tournamentSlug)).id,
+			categoryId: parsed.data.categoryId,
+			playerIds: parsed.data.playerIds,
+			name: parsed.data.name,
+			weightOverride: parsed.data.weightOverride ?? null
+		});
+		return c.json(apiSuccess({ team }), 201);
+	} catch (error$51) {
+		if (error$51 instanceof DatabaseError) return c.json(apiFailure(error$51.code, error$51.message), error$51.status === 404 ? 404 : error$51.status === 400 ? 400 : 500);
+		return c.json(apiFailure("TEAM_REGISTER_FAILED", "Could not register team"), 500);
+	}
+});
+entriesRouter.delete("/teams/:teamId", adminRoute, async (c) => {
+	await deleteTeam(c.req.param("teamId"));
+	return c.json(apiSuccess({ deleted: true }), 200);
 });
 var health_route_exports = /* @__PURE__ */ __export({
 	healthRouter: () => healthRouter,
@@ -45832,8 +46334,11 @@ try {
 	modules = {
 		"../routes/ai.route.ts": ai_route_exports,
 		"../routes/auth-config.route.ts": auth_config_route_exports,
+		"../routes/categories.route.ts": categories_route_exports,
 		"../routes/control.route.ts": control_route_exports,
+		"../routes/draws.route.ts": draws_route_exports,
 		"../routes/email-verification.route.ts": email_verification_route_exports,
+		"../routes/entries.route.ts": entries_route_exports,
 		"../routes/health.route.ts": health_route_exports,
 		"../routes/me.route.ts": me_route_exports,
 		"../routes/storage.route.ts": storage_route_exports,
