@@ -54,12 +54,13 @@ function SetupInner() {
 
   useEffect(() => {
     if (!query.trim()) { setResults([]); return; }
+    let stale = false;
     const id = window.setTimeout(() => {
       void apiFetch(`/entries/players/search?q=${encodeURIComponent(query)}`, { silent: true })
         .then((r) => json<{ players: Player[] }>(r))
-        .then((data) => setResults(data?.players ?? []));
+        .then((data) => { if (!stale) setResults(data?.players ?? []); });
     }, 250);
-    return () => window.clearTimeout(id);
+    return () => { stale = true; window.clearTimeout(id); };
   }, [query]);
 
   const createCategory = async (event: FormEvent) => {
