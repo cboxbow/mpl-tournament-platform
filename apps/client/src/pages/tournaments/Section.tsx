@@ -29,7 +29,7 @@ function renderCard(section: string, row: Row) {
   if (section === "groups") {
     return (
       <>
-        <div className="mpl-card-top"><span className="mpl-status live">{text(row, "categoryName")}</span><span>Group {text(row, "name")}</span></div>
+        <div className="mpl-card-top"><span className="mpl-status live">{text(row, "categoryName")}</span><span>{text(row, "name")}</span></div>
         <h3>{text(row, "teamName")}</h3>
         <p>Seed {text(row, "seedPosition")} · {text(row, "matchCount")} matches</p>
       </>
